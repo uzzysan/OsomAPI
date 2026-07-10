@@ -1,0 +1,7 @@
+/target
+/.worktrees
+Cargo.lock
+*.db
+*.json
+*.xml
+*.log

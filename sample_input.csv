@@ -1,0 +1,6 @@
+id,nazwa,cena,kategoria,data_dodania,czy_dostepny
+1,Laptop Dell XPS 13,4999.99,Elektronika,2024-01-15,true
+2,Mysz bezprzewodowa Logitech,149.50,Elektronika,2024-02-01,true
+3,Klawiatura mechaniczna Keychron,599.00,Elektronika,2024-01-20,false
+4,Krzesło biurowe ergonomiczne,899.00,Meble,2024-03-10,true
+5,Lampka biurkowa LED,129.99,Oświetlenie,2024-02-28,true

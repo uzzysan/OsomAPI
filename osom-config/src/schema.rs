@@ -1,4 +1,4 @@
-use crate::config::{CaseNormalization, FieldDef, FieldType, OutputSchema};
+use crate::config::CaseNormalization;
 
 /// Normalizes the case of a string value according to the schema setting.
 pub fn normalize_case(value: &str, normalization: &Option<CaseNormalization>) -> String {

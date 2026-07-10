@@ -1,0 +1,115 @@
+# Przykładowa konfiguracja OsomAPI
+# Użyj tego pliku jako szablonu do własnych konfiguracji
+
+# ============================================================
+# KONFIGURACJA LLM
+# Wybierz JEDNEGO dostawcę poprzez ustawienie provider
+# ============================================================
+
+# --- Ollama (lokalny) ---
+[llm]
+provider = "ollama"
+model = "llama3"
+url = "http://localhost:11434"
+
+# --- OpenAI (GPT) ---
+# [llm]
+# provider = "openai"
+# api_key = "sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+# model = "gpt-4o-mini"
+
+# --- Google Gemini ---
+# [llm]
+# provider = "gemini"
+# api_key = "your-gemini-api-key"
+# model = "gemini-1.5-flash"
+
+# --- Anthropic Claude ---
+# [llm]
+# provider = "anthropic"
+# api_key = "sk-ant-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+# model = "claude-3-5-sonnet-20241022"
+
+# --- GitHub Copilot ---
+# [llm]
+# provider = "copilot"
+# api_key = "ghu_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+# model = "gpt-4o"
+
+# ============================================================
+# SCHEMAT WYJŚCIOWY
+# Definiuj strukturę danych, które model ma wyciągnąć
+# ============================================================
+
+[output]
+[output.schema]
+name = "produkty"
+case_normalization = "snake"
+
+[[output.schema.fields]]
+name = "id"
+type = "integer"
+required = true
+description = "Unikalny identyfikator produktu"
+
+[[output.schema.fields]]
+name = "nazwa"
+type = "string"
+required = true
+description = "Nazwa produktu"
+
+[[output.schema.fields]]
+name = "cena"
+type = { type = "decimal", precision = 10, scale = 2 }
+required = true
+description = "Cena detaliczna w PLN"
+
+[[output.schema.fields]]
+name = "kategoria"
+type = "string"
+required = false
+description = "Kategoria produktu"
+default = "inne"
+
+[[output.schema.fields]]
+name = "data_dodania"
+type = { type = "date", format = "%Y-%m-%d" }
+required = true
+description = "Data dodania produktu do oferty"
+
+[[output.schema.fields]]
+name = "czy_dostepny"
+type = "boolean"
+required = true
+description = "Czy produkt jest dostępny w magazynie"
+
+# ============================================================
+# MIEJSCE ZAPISU WYNIKÓW
+# ============================================================
+
+[output.destination]
+type = "json"
+path = "wyniki.json"
+pretty = true
+
+# --- Alternatywa: XML ---
+# [output.destination]
+# type = "xml"
+# path = "wyniki.xml"
+# pretty = true
+
+# --- Alternatywa: SQLite ---
+# [output.destination]
+# type = "database"
+# driver = "sqlite"
+# path = "wyniki.db"
+# table_name = "produkty"
+
+# ============================================================
+# USTAWIENIA APLIKACJI (opcjonalne)
+# ============================================================
+
+[settings]
+request_timeout_secs = 120
+max_retries = 3
+log_level = "info"

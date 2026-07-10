@@ -1,4 +1,9 @@
+mod pipeline;
+
 use clap::Parser;
+use osom_config::Config;
+use pipeline::run_pipeline;
+use tracing::info;
 
 #[derive(Parser, Debug)]
 #[command(name = "osom-api")]
@@ -13,7 +18,17 @@ struct Cli {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt::init();
-    let _cli = Cli::parse();
-    println!("OsomAPI - Universal LLM Data Processor");
+    let cli = Cli::parse();
+
+    info!("OsomAPI – Universalny Procesor Danych LLM");
+    info!("Plik wejściowy: {}, Konfiguracja: {}", cli.input, cli.config);
+
+    let config = Config::from_toml_file(&cli.config)
+        .map_err(|e| anyhow::anyhow!("Błąd ładowania konfiguracji: {}", e))?;
+
+    run_pipeline(&config, &cli.input)
+        .await
+        .map_err(|e| anyhow::anyhow!("Błąd potoku przetwarzania: {}", e))?;
+
     Ok(())
 }
