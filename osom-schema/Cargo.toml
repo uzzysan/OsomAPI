@@ -1,0 +1,15 @@
+[package]
+name = "osom-schema"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+osom-config = { path = "../osom-config" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+regex = "1.11"
+chrono = "0.4"
