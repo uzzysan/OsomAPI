@@ -1,5 +1,5 @@
 use osom_config::{Config, Destination};
-use osom_llm::client::build_llm_client;
+use osom_llm::client::build_llm_client_with_settings;
 use osom_llm::prompt::PromptBuilder;
 use osom_parser::{SourceType, parse_by_source_type};
 use osom_schema::formatter::format_values;
@@ -71,7 +71,7 @@ pub async fn run_pipeline(config: &Config, input_path: &str) -> Result<(), Pipel
 
     // 4. Wywołanie LLM
     info!("Wysyłanie zapytania do modelu LLM...");
-    let client = build_llm_client(&config.llm)
+    let client = build_llm_client_with_settings(&config.llm, &config.settings)
         .map_err(|e| PipelineError::Llm(e.to_string()))?;
     let llm_response = client
         .send(&prompt)

@@ -17,14 +17,21 @@ struct Cli {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt::init();
     let cli = Cli::parse();
-
-    info!("OsomAPI – Universalny Procesor Danych LLM");
-    info!("Plik wejściowy: {}, Konfiguracja: {}", cli.input, cli.config);
 
     let config = Config::from_toml_file(&cli.config)
         .map_err(|e| anyhow::anyhow!("Błąd ładowania konfiguracji: {}", e))?;
+
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .or_else(|_| tracing_subscriber::EnvFilter::try_new(&config.settings.log_level))
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
+
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .try_init();
+
+    info!("OsomAPI – Universalny Procesor Danych LLM");
+    info!("Plik wejściowy: {}, Konfiguracja: {}", cli.input, cli.config);
 
     run_pipeline(&config, &cli.input)
         .await

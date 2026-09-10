@@ -132,8 +132,16 @@ impl DatabaseWriter {
         if !data.records.is_empty() {
             let first = &data.records[0];
             let columns: Vec<String> = first
-                .keys()
-                .map(|k| format!("{} TEXT", escape_sql_identifier(k)))
+                .iter()
+                .map(|(k, v)| {
+                    let col_type = match v {
+                        serde_json::Value::Number(n) if n.is_i64() => "INTEGER",
+                        serde_json::Value::Number(_) => "REAL",
+                        serde_json::Value::Bool(_) => "INTEGER",
+                        _ => "TEXT",
+                    };
+                    format!("{} {}", escape_sql_identifier(k), col_type)
+                })
                 .collect();
             let create_sql = format!(
                 "CREATE TABLE IF NOT EXISTS {} (id INTEGER PRIMARY KEY AUTOINCREMENT, {})",
@@ -153,23 +161,42 @@ impl DatabaseWriter {
                 .map(|k| escape_sql_identifier(k))
                 .collect::<Vec<_>>()
                 .join(", ");
-            let values: Vec<String> = keys
-                .iter()
-                .map(|k| {
-                    let v = match record.get(*k).unwrap() {
-                        serde_json::Value::String(s) => s.replace('\'', "''"),
-                        other => other.to_string().replace('\'', "''"),
-                    };
-                    format!("'{}'", v)
-                })
-                .collect();
+            let placeholders = vec!["?"; keys.len()].join(", ");
             let insert_sql = format!(
                 "INSERT INTO {} ({}) VALUES ({})",
                 escape_sql_identifier(&self.table_name),
                 columns,
-                values.join(", ")
+                placeholders
             );
-            sqlx::query(&insert_sql)
+
+            let mut query = sqlx::query(&insert_sql);
+            for key in keys {
+                match record.get(key) {
+                    Some(serde_json::Value::String(s)) => {
+                        query = query.bind(s.clone());
+                    }
+                    Some(serde_json::Value::Number(n)) => {
+                        if let Some(i) = n.as_i64() {
+                            query = query.bind(i);
+                        } else if let Some(f) = n.as_f64() {
+                            query = query.bind(f);
+                        } else {
+                            query = query.bind(n.to_string());
+                        }
+                    }
+                    Some(serde_json::Value::Bool(b)) => {
+                        query = query.bind(*b);
+                    }
+                    Some(serde_json::Value::Null) | None => {
+                        query = query.bind(Option::<String>::None);
+                    }
+                    Some(other) => {
+                        query = query.bind(other.to_string());
+                    }
+                }
+            }
+
+            query
                 .execute(&pool)
                 .await
                 .map_err(|e| WriterError::Database(e.to_string()))?;
@@ -206,5 +233,38 @@ mod tests {
     fn test_escape_sql_identifier() {
         assert_eq!(escape_sql_identifier("users"), "\"users\"");
         assert_eq!(escape_sql_identifier("user\"s"), "\"user\"\"s\"");
+    }
+
+    #[tokio::test]
+    async fn test_sqlite_writer_parameterized() {
+        use serde_json::json;
+        let db_path = "/tmp/opencode/test_writer.db";
+        let _ = tokio::fs::remove_file(db_path).await;
+
+        let writer = DatabaseWriter::new_sqlite(db_path.to_string(), Some("test_table".to_string()));
+        let mut map1 = serde_json::Map::new();
+        map1.insert("title".to_string(), json!("Item 'with' quotes"));
+        map1.insert("count".to_string(), json!(42));
+        map1.insert("price".to_string(), json!(19.99));
+        map1.insert("active".to_string(), json!(true));
+        map1.insert("extra".to_string(), serde_json::Value::Null);
+
+        let data = FormattedData {
+            records: vec![map1],
+        };
+
+        writer.write(&data).await.expect("Failed to write to sqlite");
+
+        // Verify with sqlx
+        let pool = sqlx::SqlitePool::connect(&format!("sqlite:{}", db_path))
+            .await
+            .expect("Failed to connect");
+        let count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM test_table")
+            .fetch_one(&pool)
+            .await
+            .expect("Failed to query count");
+        assert_eq!(count.0, 1);
+
+        let _ = tokio::fs::remove_file(db_path).await;
     }
 }

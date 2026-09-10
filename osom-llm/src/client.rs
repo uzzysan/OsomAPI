@@ -1,10 +1,10 @@
 use async_trait::async_trait;
-use osom_config::LlmConfig;
+use osom_config::{AppSettings, LlmConfig};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 use thiserror::Error;
-use tracing::{debug, error, info, instrument};
+use tracing::{debug, error, info, instrument, warn};
 
 /// Błąd operacji LLM
 #[derive(Debug, Error)]
@@ -36,24 +36,109 @@ pub trait LlmClient: Send + Sync {
     async fn send(&self, prompt: &str) -> Result<String, LlmError>;
 }
 
-/// Tworzy klienta LLM na podstawie konfiguracji
+/// Klient LLM ponawiający próby przy przejściowych błędach sieciowych lub limitach API.
+pub struct RetryingLlmClient {
+    inner: Box<dyn LlmClient>,
+    max_retries: u32,
+    base_backoff: Duration,
+}
+
+impl RetryingLlmClient {
+    pub fn new(inner: Box<dyn LlmClient>, max_retries: u32) -> Self {
+        Self {
+            inner,
+            max_retries,
+            base_backoff: Duration::from_millis(500),
+        }
+    }
+
+    pub fn with_backoff(
+        inner: Box<dyn LlmClient>,
+        max_retries: u32,
+        base_backoff: Duration,
+    ) -> Self {
+        Self {
+            inner,
+            max_retries,
+            base_backoff,
+        }
+    }
+}
+
+fn is_transient_error(err: &LlmError) -> bool {
+    match err {
+        LlmError::Http(e) => {
+            e.is_timeout()
+                || e.is_connect()
+                || e.status().is_some_and(|s| {
+                    s.is_server_error() || s == reqwest::StatusCode::TOO_MANY_REQUESTS
+                })
+        }
+        LlmError::Api { status, .. } => *status == 429 || *status >= 500,
+        _ => false,
+    }
+}
+
+#[async_trait]
+impl LlmClient for RetryingLlmClient {
+    async fn send(&self, prompt: &str) -> Result<String, LlmError> {
+        let mut attempts = 0;
+        loop {
+            match self.inner.send(prompt).await {
+                Ok(response) => return Ok(response),
+                Err(err) => {
+                    attempts += 1;
+                    if attempts > self.max_retries || !is_transient_error(&err) {
+                        return Err(err);
+                    }
+                    let backoff = self.base_backoff * 2u32.saturating_pow(attempts - 1);
+                    warn!(
+                        attempt = attempts,
+                        max_retries = self.max_retries,
+                        retry_in_ms = backoff.as_millis(),
+                        "LLM call failed with transient error: {}. Retrying...",
+                        err
+                    );
+                    tokio::time::sleep(backoff).await;
+                }
+            }
+        }
+    }
+}
+
+/// Tworzy klienta LLM na podstawie konfiguracji i domyślnych ustawień aplikacji
 pub fn build_llm_client(config: &LlmConfig) -> Result<Box<dyn LlmClient>, LlmError> {
-    match config {
+    build_llm_client_with_settings(config, &AppSettings::default())
+}
+
+/// Tworzy klienta LLM na podstawie konfiguracji dostawcy i ustawień aplikacji (timeout, retries)
+pub fn build_llm_client_with_settings(
+    config: &LlmConfig,
+    settings: &AppSettings,
+) -> Result<Box<dyn LlmClient>, LlmError> {
+    let timeout = Duration::from_secs(settings.request_timeout_secs);
+    let inner: Box<dyn LlmClient> = match config {
         LlmConfig::Ollama { model, url } => {
-            Ok(Box::new(OllamaClient::new(url.clone(), model.clone())))
+            Box::new(OllamaClient::new_with_timeout(url.clone(), model.clone(), timeout))
         }
         LlmConfig::Gemini { api_key, model } => {
-            Ok(Box::new(GeminiClient::new(api_key.clone(), model.clone())))
+            Box::new(GeminiClient::new_with_timeout(api_key.clone(), model.clone(), timeout))
         }
         LlmConfig::OpenAi { api_key, model } => {
-            Ok(Box::new(OpenAiClient::new(api_key.clone(), model.clone())))
+            Box::new(OpenAiClient::new_with_timeout(api_key.clone(), model.clone(), timeout))
         }
         LlmConfig::Anthropic { api_key, model } => {
-            Ok(Box::new(AnthropicClient::new(api_key.clone(), model.clone())))
+            Box::new(AnthropicClient::new_with_timeout(api_key.clone(), model.clone(), timeout))
         }
         LlmConfig::Copilot { api_key, model } => {
-            Ok(Box::new(CopilotClient::new(api_key.clone(), model.clone())))
+            Box::new(CopilotClient::new_with_timeout(api_key.clone(), model.clone(), timeout))
         }
+    };
+
+    if settings.max_retries > 0 {
+        Ok(Box::new(RetryingLlmClient::new(inner, settings.max_retries)))
+    } else {
+        Ok(inner)
     }
 }
 
@@ -67,11 +152,16 @@ pub struct OllamaClient {
 }
 
 impl OllamaClient {
-    /// Tworzy nowego klienta Ollama
+    /// Tworzy nowego klienta Ollama z domyślnym timeoutem 120s
     pub fn new(base_url: String, model: String) -> Self {
+        Self::new_with_timeout(base_url, model, Duration::from_secs(120))
+    }
+
+    /// Tworzy nowego klienta Ollama ze wskazanym timeoutem
+    pub fn new_with_timeout(base_url: String, model: String, timeout: Duration) -> Self {
         Self {
             client: Client::builder()
-                .timeout(Duration::from_secs(120))
+                .timeout(timeout)
                 .build()
                 .expect("Failed to build HTTP client"),
             base_url,
@@ -130,11 +220,16 @@ pub struct OpenAiClient {
 }
 
 impl OpenAiClient {
-    /// Tworzy nowego klienta OpenAI
+    /// Tworzy nowego klienta OpenAI z domyślnym timeoutem 120s
     pub fn new(api_key: String, model: String) -> Self {
+        Self::new_with_timeout(api_key, model, Duration::from_secs(120))
+    }
+
+    /// Tworzy nowego klienta OpenAI ze wskazanym timeoutem
+    pub fn new_with_timeout(api_key: String, model: String, timeout: Duration) -> Self {
         Self {
             client: Client::builder()
-                .timeout(Duration::from_secs(120))
+                .timeout(timeout)
                 .build()
                 .expect("Failed to build HTTP client"),
             api_key,
@@ -217,11 +312,16 @@ pub struct GeminiClient {
 }
 
 impl GeminiClient {
-    /// Tworzy nowego klienta Gemini
+    /// Tworzy nowego klienta Gemini z domyślnym timeoutem 120s
     pub fn new(api_key: String, model: String) -> Self {
+        Self::new_with_timeout(api_key, model, Duration::from_secs(120))
+    }
+
+    /// Tworzy nowego klienta Gemini ze wskazanym timeoutem
+    pub fn new_with_timeout(api_key: String, model: String, timeout: Duration) -> Self {
         Self {
             client: Client::builder()
-                .timeout(Duration::from_secs(120))
+                .timeout(timeout)
                 .build()
                 .expect("Failed to build HTTP client"),
             api_key,
@@ -310,11 +410,16 @@ pub struct AnthropicClient {
 }
 
 impl AnthropicClient {
-    /// Tworzy nowego klienta Anthropic
+    /// Tworzy nowego klienta Anthropic z domyślnym timeoutem 120s
     pub fn new(api_key: String, model: String) -> Self {
+        Self::new_with_timeout(api_key, model, Duration::from_secs(120))
+    }
+
+    /// Tworzy nowego klienta Anthropic ze wskazanym timeoutem
+    pub fn new_with_timeout(api_key: String, model: String, timeout: Duration) -> Self {
         Self {
             client: Client::builder()
-                .timeout(Duration::from_secs(120))
+                .timeout(timeout)
                 .build()
                 .expect("Failed to build HTTP client"),
             api_key,
@@ -408,11 +513,16 @@ pub struct CopilotClient {
 }
 
 impl CopilotClient {
-    /// Tworzy nowego klienta Copilot
+    /// Tworzy nowego klienta Copilot z domyślnym timeoutem 120s
     pub fn new(api_key: String, model: String) -> Self {
+        Self::new_with_timeout(api_key, model, Duration::from_secs(120))
+    }
+
+    /// Tworzy nowego klienta Copilot ze wskazanym timeoutem
+    pub fn new_with_timeout(api_key: String, model: String, timeout: Duration) -> Self {
         Self {
             client: Client::builder()
-                .timeout(Duration::from_secs(120))
+                .timeout(timeout)
                 .build()
                 .expect("Failed to build HTTP client"),
             api_key,
@@ -557,5 +667,73 @@ mod tests {
         };
         assert!(err.to_string().contains("401"));
         assert!(err.to_string().contains("Unauthorized"));
+    }
+
+    #[test]
+    fn test_build_llm_client_with_settings() {
+        let config = LlmConfig::Ollama {
+            model: "llama3".to_string(),
+            url: "http://localhost:11434".to_string(),
+        };
+        let settings = AppSettings {
+            request_timeout_secs: 30,
+            max_retries: 2,
+            log_level: "debug".to_string(),
+        };
+        let client = build_llm_client_with_settings(&config, &settings);
+        assert!(client.is_ok());
+    }
+
+    struct MockFailingClient {
+        call_count: std::sync::atomic::AtomicUsize,
+        failures_before_success: usize,
+        error_status: u16,
+    }
+
+    #[async_trait]
+    impl LlmClient for MockFailingClient {
+        async fn send(&self, _prompt: &str) -> Result<String, LlmError> {
+            let count = self.call_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if count < self.failures_before_success {
+                Err(LlmError::Api {
+                    status: self.error_status,
+                    message: "Temporary error".to_string(),
+                })
+            } else {
+                Ok("success".to_string())
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_retrying_llm_client_succeeds_after_retry() {
+        let inner = Box::new(MockFailingClient {
+            call_count: std::sync::atomic::AtomicUsize::new(0),
+            failures_before_success: 2,
+            error_status: 429, // rate limit (transient)
+        });
+        let client = RetryingLlmClient::with_backoff(
+            inner,
+            3,
+            Duration::from_millis(5),
+        );
+        let res = client.send("hello").await;
+        assert_eq!(res.unwrap(), "success");
+    }
+
+    #[tokio::test]
+    async fn test_retrying_llm_client_fails_on_non_transient() {
+        let inner = Box::new(MockFailingClient {
+            call_count: std::sync::atomic::AtomicUsize::new(0),
+            failures_before_success: 2,
+            error_status: 401, // unauthorized (non-transient)
+        });
+        let client = RetryingLlmClient::with_backoff(
+            inner,
+            3,
+            Duration::from_millis(5),
+        );
+        let res = client.send("hello").await;
+        assert!(res.is_err());
     }
 }
