@@ -103,6 +103,62 @@ pub async fn parse_by_source_type(
     }
 }
 
+/// Automatycznie wykrywa format pliku na podstawie rozszerzenia oraz sygnatur/magicznych bajtów.
+pub fn detect_source_type(
+    input: &[u8],
+    extension: Option<&str>,
+) -> Result<SourceType, ParserError> {
+    if let Some(ext) = extension {
+        match ext.trim_start_matches('.').to_lowercase().as_str() {
+            "json" => return Ok(SourceType::Json),
+            "xml" => return Ok(SourceType::Xml),
+            "csv" => return Ok(SourceType::Csv),
+            "pdf" => return Ok(SourceType::Pdf),
+            _ => {}
+        }
+    }
+
+    // Wykrywanie sygnatury binarnej PDF
+    if input.starts_with(b"%PDF-") {
+        return Ok(SourceType::Pdf);
+    }
+
+    // Wykrywanie formatów tekstowych
+    if let Ok(text) = std::str::from_utf8(input) {
+        let trimmed = text.trim();
+        if trimmed.starts_with('{') || trimmed.starts_with('[') {
+            return Ok(SourceType::Json);
+        }
+        if trimmed.starts_with("<?xml")
+            || (trimmed.starts_with('<') && trimmed.ends_with('>'))
+        {
+            return Ok(SourceType::Xml);
+        }
+        // Heurystyka CSV: obecność delimiterów i poprawny nagłówek
+        if trimmed.contains(',') || trimmed.contains(';') || trimmed.contains('\t') {
+            let mut reader = csv::ReaderBuilder::new()
+                .has_headers(true)
+                .from_reader(input);
+            if let Ok(headers) = reader.headers() {
+                if headers.len() > 1 {
+                    return Ok(SourceType::Csv);
+                }
+            }
+        }
+    }
+
+    Err(ParserError::UnknownSource)
+}
+
+/// Automatycznie wykrywa typ danych i parsuje je do [`ParsedData`].
+pub async fn parse_auto(
+    input: &[u8],
+    extension: Option<&str>,
+) -> Result<ParsedData, ParserError> {
+    let source_type = detect_source_type(input, extension)?;
+    parse_by_source_type(source_type, input).await
+}
+
 // ─────────────────────────────────────────────
 // JsonParser
 // ─────────────────────────────────────────────
@@ -530,6 +586,73 @@ mod tests {
         let xml = br#"<root/>"#;
         let result = parse_by_source_type(SourceType::Xml, xml).await.unwrap();
         assert_eq!(result.source_type, SourceType::Xml);
+    }
+
+    #[tokio::test]
+    async fn test_detect_source_type_by_extension() {
+        assert_eq!(
+            detect_source_type(b"", Some("csv")).unwrap(),
+            SourceType::Csv
+        );
+        assert_eq!(
+            detect_source_type(b"", Some(".json")).unwrap(),
+            SourceType::Json
+        );
+        assert_eq!(
+            detect_source_type(b"", Some("xml")).unwrap(),
+            SourceType::Xml
+        );
+        assert_eq!(
+            detect_source_type(b"", Some(".pdf")).unwrap(),
+            SourceType::Pdf
+        );
+    }
+
+    #[tokio::test]
+    async fn test_detect_source_type_magic_bytes_and_content() {
+        // PDF magic bytes
+        assert_eq!(
+            detect_source_type(b"%PDF-1.7 ...", None).unwrap(),
+            SourceType::Pdf
+        );
+
+        // JSON without extension
+        assert_eq!(
+            detect_source_type(b"  {\"name\": \"test\"}", None).unwrap(),
+            SourceType::Json
+        );
+        assert_eq!(
+            detect_source_type(b"  [1, 2, 3]", None).unwrap(),
+            SourceType::Json
+        );
+
+        // XML without extension
+        assert_eq!(
+            detect_source_type(b"<?xml version=\"1.0\"?><items></items>", None).unwrap(),
+            SourceType::Xml
+        );
+        assert_eq!(
+            detect_source_type(b"<items><item>1</item></items>", None).unwrap(),
+            SourceType::Xml
+        );
+
+        // CSV without extension
+        let csv_data = b"col1,col2,col3\nval1,val2,val3\n";
+        assert_eq!(
+            detect_source_type(csv_data, None).unwrap(),
+            SourceType::Csv
+        );
+
+        // Unknown
+        assert!(detect_source_type(b"some random plain text", None).is_err());
+    }
+
+    #[tokio::test]
+    async fn test_parse_auto_without_extension() {
+        let json_data = br#"{"key": "value"}"#;
+        let parsed = parse_auto(json_data, None).await.unwrap();
+        assert_eq!(parsed.source_type, SourceType::Json);
+        assert!(parsed.content.contains("\"key\": \"value\""));
     }
 
     // ─── SourceType Display ───

@@ -58,7 +58,8 @@ OsomAPI zbudowane jest jako workspace Cargo składający się z 6 crate'ów, gdz
 
 **Kluczowe typy:**
 - `LlmClient` – async trait (via `async-trait`) z metodą `send(&self, prompt: &str)`
-- `build_llm_client(&LlmConfig) -> Box<dyn LlmClient>` – fabryka klientów
+- `RetryingLlmClient` – wrapper z wykładniczym backoffem (exponential backoff) i ponawianiem prób dla błędów przejściowych (429, 5xx, timeout, rozłączenie sieci)
+- `build_llm_client(&LlmConfig)` oraz `build_llm_client_with_settings(&LlmConfig, &AppSettings)` – fabryki klientów konfigurujące timeout i politykę ponawiania prób
 
 **Implementacje klientów:**
 | Dostawca | Endpoint | Uwagi |
@@ -84,8 +85,12 @@ OsomAPI zbudowane jest jako workspace Cargo składający się z 6 crate'ów, gdz
 - `ValidationError` – błędy brakujących pól, niezgodności typów, nieprawidłowych tablic
 
 **Proces:**
-1. `validate()` – sprawdza czy odpowiedź LLM jest obiektem lub tablicą obiektów, weryfikuje wymagane pola i typy
-2. `format_values()` – przekształca surową odpowiedź w sformatowane dane, aplikuje `normalize_case` dla stringów, uzupełnia wartości domyślne
+1. `validate()` – sprawdza czy odpowiedź LLM jest obiektem lub tablicą obiektów, weryfikuje wymagane pola, poprawność dat/czasów (`chrono`) oraz poprawność liczb dziesiętnych
+2. `format_values()` – przekształca surową odpowiedź w sformatowane dane:
+   - normalizuje i zaokrągla liczby dziesiętne (`Decimal`) do zdefiniowanej skali `scale`,
+   - parsuje i ujednolica daty (`Date`) oraz daty i czasy (`DateTime`) do zadanego wzorca `strftime`,
+   - aplikuje `normalize_case` dla stringów,
+   - uzupełnia wartości domyślne.
 
 ### osom-writer
 
@@ -93,23 +98,28 @@ OsomAPI zbudowane jest jako workspace Cargo składający się z 6 crate'ów, gdz
 
 **Implementacje:**
 - `JsonWriter` – serializacja przez `serde_json::to_string_pretty` lub `to_string`, zapis async przez `tokio::fs::write`
-- `XmlWriter` – ręczna generacja XML z escape'owaniem (`&`, `<`, `>`, `"`, `'`)
-- `DatabaseWriter` – SQLite przez `sqlx::SqlitePool`, dynamiczne tworzenie tabeli, parametryzowane inserty
+- `XmlWriter` – generacja XML z escape'owaniem znaków specjalnych
+- `DatabaseWriter` – obsługa bazy danych SQLite (z planowaną rozbudową o PostgreSQL/MySQL) przez `sqlx`, bezpieczne parametryzowane zapytania (prepared statements) zapobiegające SQL Injection
 
 ### osom-api
 
 **Odpowiedzialność:** CLI (clap) i orkiestracja potoku przetwarzania.
+
+**Kluczowe funkcjonalności:**
+- Opcje uruchomienia (`PipelineOptions`): obsługa `--dry-run` oraz `--output`
+- Konfiguracja poziomu logowania `tracing` z poziomu `config.settings.log_level` z priorytetem dla zmiennej `RUST_LOG`
 
 **Potok (pipeline):**
 1. Odczyt pliku wejściowego (`tokio::fs::read`)
 2. Detekcja typu na podstawie rozszerzenia (`.json`, `.xml`, `.csv`, `.pdf`)
 3. Parsowanie przez `parse_by_source_type`
 4. Budowanie promptu przez `PromptBuilder::build`
-5. Wywołanie LLM przez `build_llm_client`
-6. Ekstrakcja JSON z markdown (`extract_json_from_markdown`)
-7. Walidacja schematu (`validate`)
-8. Formatowanie (`format_values`)
-9. Zapis wyników (`JsonWriter`, `XmlWriter`, lub `DatabaseWriter`)
+5. (Tryb dry-run: wyświetlenie promptu i zakończenie bez zapytań sieciowych)
+6. Wywołanie LLM przez `build_llm_client_with_settings` (z uwzględnieniem retry i timeoutów)
+7. Ekstrakcja JSON z markdown (`extract_json_from_markdown`)
+8. Walidacja schematu (`validate`)
+9. Formatowanie (`format_values`)
+10. Zapis wyników (`JsonWriter`, `XmlWriter`, lub `DatabaseWriter`)
 
 ## Stack technologiczny
 

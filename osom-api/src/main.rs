@@ -7,7 +7,7 @@ use tracing::info;
 #[command(name = "osom-api")]
 #[command(about = "Universal API for processing data through LLM")]
 struct Cli {
-    #[arg(short, long, help = "Path to input file")]
+    #[arg(short, long, help = "Path to input file or directory")]
     input: String,
     #[arg(short, long, default_value = "config.toml", help = "Path to config file")]
     config: String,
@@ -15,6 +15,8 @@ struct Cli {
     dry_run: bool,
     #[arg(short, long, help = "Override output destination file path")]
     output: Option<String>,
+    #[arg(short, long, help = "File extension / pattern filter when scanning directory (e.g. *.csv)")]
+    pattern: Option<String>,
 }
 
 #[tokio::main]
@@ -38,6 +40,7 @@ async fn main() -> anyhow::Result<()> {
     let options = PipelineOptions {
         dry_run: cli.dry_run,
         output_override: cli.output,
+        pattern: cli.pattern,
     };
 
     run_pipeline_with_options(&config, &cli.input, &options)

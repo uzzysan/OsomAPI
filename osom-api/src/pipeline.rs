@@ -1,8 +1,8 @@
 use osom_config::{Config, Destination};
 use osom_llm::client::build_llm_client_with_settings;
 use osom_llm::prompt::PromptBuilder;
-use osom_parser::{SourceType, parse_by_source_type};
-use osom_schema::formatter::format_values;
+use osom_parser::parse_auto;
+use osom_schema::formatter::{format_values, FormattedData};
 use osom_schema::validator::validate;
 use osom_writer::writer::{DatabaseWriter, JsonWriter, XmlWriter};
 use std::path::Path;
@@ -37,6 +37,8 @@ pub struct PipelineOptions {
     pub dry_run: bool,
     /// Opcjonalne nadpisanie ścieżki pliku docelowego
     pub output_override: Option<String>,
+    /// Opcjonalny filtr rozszerzenia / wzorca przy przetwarzaniu katalogu
+    pub pattern: Option<String>,
 }
 
 /// Wykonuje pełny potok przetwarzania z domyślnymi opcjami.
@@ -46,15 +48,36 @@ pub async fn run_pipeline(config: &Config, input_path: &str) -> Result<(), Pipel
 }
 
 /// Wykonuje pełny potok przetwarzania: parse → LLM → validate → format → write.
+/// Obsługuje zarówno pojedynczy plik, jak i cały katalog w trybie wsadowym (batch).
 pub async fn run_pipeline_with_options(
     config: &Config,
     input_path: &str,
     options: &PipelineOptions,
 ) -> Result<(), PipelineError> {
-    info!("Rozpoczynanie potoku przetwarzania dla: {}", input_path);
+    let p = Path::new(input_path);
+    if !p.exists() {
+        return Err(PipelineError::Config(format!(
+            "Ścieżka wejściowa '{}' nie istnieje",
+            input_path
+        )));
+    }
 
-    // 1. Odczyt pliku wejściowego
-    let input_bytes = tokio::fs::read(input_path)
+    if p.is_dir() {
+        run_batch_pipeline(config, p, options).await
+    } else {
+        run_single_pipeline(config, p, options).await
+    }
+}
+
+async fn run_single_pipeline(
+    config: &Config,
+    file_path: &Path,
+    options: &PipelineOptions,
+) -> Result<(), PipelineError> {
+    let display_name = file_path.display().to_string();
+    info!("Rozpoczynanie przetwarzania pliku: {}", display_name);
+
+    let input_bytes = tokio::fs::read(file_path)
         .await
         .map_err(|e| PipelineError::Config(format!("Nie można odczytać pliku: {}", e)))?;
 
@@ -62,29 +85,13 @@ pub async fn run_pipeline_with_options(
         return Err(PipelineError::EmptyInput);
     }
 
-    // 2. Wybór parsera na podstawie rozszerzenia
-    let ext = Path::new(input_path)
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or("")
-        .to_lowercase();
+    let ext = file_path.extension().and_then(|e| e.to_str());
 
-    let source_type = match ext.as_str() {
-        "json" => SourceType::Json,
-        "xml" => SourceType::Xml,
-        "csv" => SourceType::Csv,
-        "pdf" => SourceType::Pdf,
-        _ => {
-            return Err(PipelineError::UnsupportedExtension(ext.to_string()));
-        }
-    };
-
-    info!("Parsowanie danych wejściowych (typ: {})...", ext);
-    let parsed = parse_by_source_type(source_type, &input_bytes)
+    info!("Parsowanie danych wejściowych...");
+    let parsed = parse_auto(&input_bytes, ext)
         .await
         .map_err(|e| PipelineError::Parser(e.to_string()))?;
 
-    // 3. Budowanie promptu
     info!("Budowanie promptu LLM...");
     let prompt = PromptBuilder::build(&parsed.content, &config.output.schema);
 
@@ -94,7 +101,6 @@ pub async fn run_pipeline_with_options(
         return Ok(());
     }
 
-    // 4. Wywołanie LLM
     info!("Wysyłanie zapytania do modelu LLM...");
     let client = build_llm_client_with_settings(&config.llm, &config.settings)
         .map_err(|e| PipelineError::Llm(e.to_string()))?;
@@ -103,17 +109,14 @@ pub async fn run_pipeline_with_options(
         .await
         .map_err(|e| PipelineError::Llm(e.to_string()))?;
 
-    // 5. Parsowanie odpowiedzi LLM jako JSON
     info!("Parsowanie odpowiedzi LLM...");
     let raw_json = extract_json_from_markdown(&llm_response)
         .map_err(|e| PipelineError::Llm(format!("Nie można sparsować odpowiedzi jako JSON: {}", e)))?;
 
-    // 6. Walidacja schematu
     info!("Walidacja zgodności ze schematem...");
     validate(&raw_json, &config.output.schema)
         .map_err(|e| PipelineError::Validation(e.to_string()))?;
 
-    // 7. Formatowanie wartości
     info!("Formatowanie danych wyjściowych...");
     let formatted = format_values(&raw_json, &config.output.schema)
         .map_err(|e| PipelineError::Formatting(e.to_string()))?;
@@ -122,9 +125,139 @@ pub async fn run_pipeline_with_options(
         warn!("Ostrzeżenie: brak rekordów do zapisu");
     }
 
-    // 8. Zapis wyników
     info!("Zapisywanie wyników...");
-    let destination = match (&options.output_override, &config.output.destination) {
+    let destination = resolve_destination(config, options);
+    write_destination(&destination, &formatted).await?;
+
+    info!("Potok zakończony pomyślnie.");
+    Ok(())
+}
+
+async fn run_batch_pipeline(
+    config: &Config,
+    dir_path: &Path,
+    options: &PipelineOptions,
+) -> Result<(), PipelineError> {
+    info!(
+        "Rozpoczynanie przetwarzania wsadowego katalogu: {}",
+        dir_path.display()
+    );
+
+    let mut entries = tokio::fs::read_dir(dir_path)
+        .await
+        .map_err(|e| PipelineError::Config(format!("Nie można odczytać katalogu: {}", e)))?;
+
+    let mut files = Vec::new();
+    while let Some(entry) = entries
+        .next_entry()
+        .await
+        .map_err(|e| PipelineError::Config(format!("Błąd iteracji katalogu: {}", e)))?
+    {
+        let file_type = entry
+            .file_type()
+            .await
+            .map_err(|e| PipelineError::Config(format!("Błąd sprawdzania typu pliku: {}", e)))?;
+        if file_type.is_file() {
+            let path = entry.path();
+            let file_name = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or_default();
+            if file_name.starts_with('.') {
+                continue;
+            }
+            if let Some(ref pat) = options.pattern {
+                let pat_clean = pat.trim_start_matches('*').trim_start_matches('.');
+                let ext = path
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .unwrap_or_default();
+                if !ext.eq_ignore_ascii_case(pat_clean) && !file_name.contains(pat_clean) {
+                    continue;
+                }
+            }
+            files.push(path);
+        }
+    }
+
+    files.sort();
+
+    if files.is_empty() {
+        return Err(PipelineError::Config(format!(
+            "Brak pasujących plików do przetworzenia w katalogu: {:?}",
+            dir_path
+        )));
+    }
+
+    info!(
+        "Znaleziono {} plików do przetworzenia w trybie wsadowym.",
+        files.len()
+    );
+    let mut all_records = Vec::new();
+
+    for file_path in &files {
+        let display_name = file_path.display().to_string();
+        info!("--- Przetwarzanie wsadowe pliku: {} ---", display_name);
+        let input_bytes = tokio::fs::read(file_path)
+            .await
+            .map_err(|e| PipelineError::Config(format!("Nie można odczytać pliku {}: {}", display_name, e)))?;
+        if input_bytes.is_empty() {
+            warn!("Pominięcie pustego pliku: {}", display_name);
+            continue;
+        }
+
+        let ext = file_path.extension().and_then(|e| e.to_str());
+        let parsed = parse_auto(&input_bytes, ext)
+            .await
+            .map_err(|e| PipelineError::Parser(format!("{}: {}", display_name, e)))?;
+
+        let prompt = PromptBuilder::build(&parsed.content, &config.output.schema);
+        if options.dry_run {
+            info!("--- DRY-RUN [{}] ---", display_name);
+            println!("=== Plik: {} ===\n{}\n", display_name, prompt);
+            continue;
+        }
+
+        let client = build_llm_client_with_settings(&config.llm, &config.settings)
+            .map_err(|e| PipelineError::Llm(e.to_string()))?;
+        let llm_response = client
+            .send(&prompt)
+            .await
+            .map_err(|e| PipelineError::Llm(format!("{}: {}", display_name, e)))?;
+
+        let raw_json = extract_json_from_markdown(&llm_response)
+            .map_err(|e| PipelineError::Llm(format!("{}: {}", display_name, e)))?;
+
+        validate(&raw_json, &config.output.schema)
+            .map_err(|e| PipelineError::Validation(format!("{}: {}", display_name, e)))?;
+
+        let formatted = format_values(&raw_json, &config.output.schema)
+            .map_err(|e| PipelineError::Formatting(format!("{}: {}", display_name, e)))?;
+
+        all_records.extend(formatted.records);
+    }
+
+    if options.dry_run {
+        return Ok(());
+    }
+
+    let total_records = all_records.len();
+    let final_data = FormattedData {
+        records: all_records,
+    };
+    let destination = resolve_destination(config, options);
+    write_destination(&destination, &final_data).await?;
+
+    info!(
+        "Potok wsadowy zakończony pomyślnie. Zapisano łącznie {} rekordów z {} plików.",
+        total_records,
+        files.len()
+    );
+    Ok(())
+}
+
+fn resolve_destination(config: &Config, options: &PipelineOptions) -> Destination {
+    match (&options.output_override, &config.output.destination) {
         (Some(override_path), Destination::Json { pretty, .. }) => Destination::Json {
             path: override_path.clone(),
             pretty: *pretty,
@@ -140,43 +273,39 @@ pub async fn run_pipeline_with_options(
             table_name: table_name.clone(),
         },
         _ => config.output.destination.clone(),
-    };
+    }
+}
 
-    match &destination {
+async fn write_destination(
+    destination: &Destination,
+    data: &FormattedData,
+) -> Result<(), PipelineError> {
+    match destination {
         Destination::Json { path, pretty } => {
             let writer = JsonWriter::new(path.clone(), *pretty);
             writer
-                .write(&formatted)
+                .write(data)
                 .await
                 .map_err(|e| PipelineError::Writer(e.to_string()))?;
         }
         Destination::Xml { path, pretty } => {
             let writer = XmlWriter::new(path.clone(), *pretty);
             writer
-                .write(&formatted)
+                .write(data)
                 .await
                 .map_err(|e| PipelineError::Writer(e.to_string()))?;
         }
         Destination::Database {
             connection,
             table_name,
-        } => match connection {
-            osom_config::DbConnection::Sqlite { path } => {
-                let writer = DatabaseWriter::new_sqlite(path.clone(), table_name.clone());
-                writer
-                    .write(&formatted)
-                    .await
-                    .map_err(|e| PipelineError::Writer(e.to_string()))?;
-            }
-            _ => {
-                return Err(PipelineError::Writer(
-                    "W tej wersji obsługiwany jest tylko SQLite".to_string(),
-                ));
-            }
-        },
+        } => {
+            let writer = DatabaseWriter::new(connection.clone(), table_name.clone());
+            writer
+                .write(data)
+                .await
+                .map_err(|e| PipelineError::Writer(e.to_string()))?;
+        }
     }
-
-    info!("Potok zakończony pomyślnie.");
     Ok(())
 }
 
@@ -250,6 +379,7 @@ mod tests {
         let options = PipelineOptions {
             dry_run: true,
             output_override: None,
+            pattern: None,
         };
 
         let result = run_pipeline_with_options(&config, input_path, &options).await;

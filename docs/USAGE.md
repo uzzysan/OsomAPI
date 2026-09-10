@@ -30,12 +30,24 @@ osom-api --input <plik_wejsciowy> --config <plik_konfiguracyjny>
 |-------|-------|----------|------|-----------|
 | `--input` | `-i` | tak | Ścieżka do pliku wejściowego | – |
 | `--config` | `-c` | nie | Ścieżka do pliku konfiguracyjnego | `config.toml` |
+| `--dry-run` | – | nie | Wyświetlenie promptu bez wysyłania zapytania do LLM | `false` |
+| `--output` | `-o` | nie | Nadpisanie ścieżki pliku wynikowego | z pliku config |
 
 ### Przykłady uruchomienia
 
 **Przetwarzanie pliku CSV z konfiguracją domyślną:**
 ```bash
 osom-api --input faktury.csv
+```
+
+**Podgląd wygenerowanego promptu (tryb dry-run):**
+```bash
+osom-api --input faktury.csv --config config.toml --dry-run
+```
+
+**Nadpisanie docelowego pliku wyjściowego:**
+```bash
+osom-api --input faktury.csv --config config.toml -o /tmp/wyniki_test.json
 ```
 
 **Przetwarzanie pliku PDF z własną konfiguracją:**

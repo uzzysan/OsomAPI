@@ -1,3 +1,4 @@
+use osom_config::DbConnection;
 use osom_schema::formatter::FormattedData;
 use thiserror::Error;
 use tracing::info;
@@ -90,39 +91,101 @@ fn escape_xml(s: &str) -> String {
         .replace('\'', "&apos;")
 }
 
-/// Zapisuje dane do bazy danych SQLite.
+/// Zapisuje dane do bazy danych (SQLite, PostgreSQL, MySQL).
 pub struct DatabaseWriter {
-    connection_string: String,
+    connection: DbConnection,
     table_name: String,
-    driver: String,
 }
 
 impl DatabaseWriter {
-    pub fn new_sqlite(path: String, table_name: Option<String>) -> Self {
+    /// Tworzy nowego DatabaseWriter z dowolnym połączeniem
+    pub fn new(connection: DbConnection, table_name: Option<String>) -> Self {
         Self {
-            connection_string: path,
+            connection,
             table_name: table_name.unwrap_or_else(|| "osom_records".to_string()),
-            driver: "sqlite".to_string(),
         }
+    }
+
+    /// Tworzy nowego DatabaseWriter dla bazy SQLite
+    pub fn new_sqlite(path: String, table_name: Option<String>) -> Self {
+        Self::new(DbConnection::Sqlite { path }, table_name)
+    }
+
+    /// Tworzy nowego DatabaseWriter dla bazy PostgreSQL
+    pub fn new_postgres(
+        host: String,
+        port: u16,
+        database: String,
+        username: String,
+        password: String,
+        table_name: Option<String>,
+    ) -> Self {
+        Self::new(
+            DbConnection::Postgres {
+                host,
+                port,
+                database,
+                username,
+                password,
+            },
+            table_name,
+        )
+    }
+
+    /// Tworzy nowego DatabaseWriter dla bazy MySQL
+    pub fn new_mysql(
+        host: String,
+        port: u16,
+        database: String,
+        username: String,
+        password: String,
+        table_name: Option<String>,
+    ) -> Self {
+        Self::new(
+            DbConnection::Mysql {
+                host,
+                port,
+                database,
+                username,
+                password,
+            },
+            table_name,
+        )
     }
 
     /// Zapisuje sformatowane dane do bazy danych.
     pub async fn write(&self, data: &FormattedData) -> Result<(), WriterError> {
-        if self.driver != "sqlite" {
-            return Err(WriterError::Database(format!(
-                "Nieobsługiwany sterownik bazy danych: {}",
-                self.driver
-            )));
+        match &self.connection {
+            DbConnection::Sqlite { path } => self.write_sqlite(path, data).await,
+            DbConnection::Postgres {
+                host,
+                port,
+                database,
+                username,
+                password,
+            } => {
+                self.write_postgres(host, *port, database, username, password, data)
+                    .await
+            }
+            DbConnection::Mysql {
+                host,
+                port,
+                database,
+                username,
+                password,
+            } => {
+                self.write_mysql(host, *port, database, username, password, data)
+                    .await
+            }
         }
-        self.write_sqlite(data).await
     }
 
-    async fn write_sqlite(&self, data: &FormattedData) -> Result<(), WriterError> {
+    async fn write_sqlite(&self, path: &str, data: &FormattedData) -> Result<(), WriterError> {
         use sqlx::sqlite::SqliteConnectOptions;
         use sqlx::SqlitePool;
         use std::str::FromStr;
 
-        let options = SqliteConnectOptions::from_str(&format!("sqlite:{}", self.connection_string))
+        let options = SqliteConnectOptions::from_str(&format!("sqlite:{}", path))
             .map_err(|e| WriterError::Database(e.to_string()))?
             .create_if_missing(true);
         let pool = SqlitePool::connect_with(options)
@@ -208,15 +271,247 @@ impl DatabaseWriter {
                 .map_err(|e| WriterError::Database(e.to_string()))?;
         }
 
-        info!("Zapisano dane do SQLite: {}", self.connection_string);
+        info!("Zapisano dane do SQLite: {}", path);
+        Ok(())
+    }
+
+    async fn write_postgres(
+        &self,
+        host: &str,
+        port: u16,
+        database: &str,
+        username: &str,
+        password: &str,
+        data: &FormattedData,
+    ) -> Result<(), WriterError> {
+        use sqlx::PgPool;
+
+        let url = format!(
+            "postgres://{}:{}@{}:{}/{}",
+            urlencoding_encode(username),
+            urlencoding_encode(password),
+            host,
+            port,
+            database
+        );
+        let pool = PgPool::connect(&url)
+            .await
+            .map_err(|e| WriterError::Database(e.to_string()))?;
+
+        if !data.records.is_empty() {
+            let first = &data.records[0];
+            let columns: Vec<String> = first
+                .iter()
+                .map(|(k, v)| {
+                    let col_type = match v {
+                        serde_json::Value::Number(n) if n.is_i64() => "BIGINT",
+                        serde_json::Value::Number(_) => "DOUBLE PRECISION",
+                        serde_json::Value::Bool(_) => "BOOLEAN",
+                        _ => "TEXT",
+                    };
+                    format!("{} {}", escape_sql_identifier(k), col_type)
+                })
+                .collect();
+            let has_id = first.keys().any(|k| k.eq_ignore_ascii_case("id"));
+            let table_cols = if has_id {
+                columns.join(", ")
+            } else {
+                format!("_id BIGSERIAL PRIMARY KEY, {}", columns.join(", "))
+            };
+            let create_sql = format!(
+                "CREATE TABLE IF NOT EXISTS {} ({})",
+                escape_sql_identifier(&self.table_name),
+                table_cols
+            );
+            sqlx::query(&create_sql)
+                .execute(&pool)
+                .await
+                .map_err(|e| WriterError::Database(e.to_string()))?;
+        }
+
+        for record in &data.records {
+            let keys: Vec<&String> = record.keys().collect();
+            let columns = keys
+                .iter()
+                .map(|k| escape_sql_identifier(k))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let placeholders = (1..=keys.len())
+                .map(|i| format!("${}", i))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let insert_sql = format!(
+                "INSERT INTO {} ({}) VALUES ({})",
+                escape_sql_identifier(&self.table_name),
+                columns,
+                placeholders
+            );
+
+            let mut query = sqlx::query(&insert_sql);
+            for key in keys {
+                match record.get(key) {
+                    Some(serde_json::Value::String(s)) => {
+                        query = query.bind(s.clone());
+                    }
+                    Some(serde_json::Value::Number(n)) => {
+                        if let Some(i) = n.as_i64() {
+                            query = query.bind(i);
+                        } else if let Some(f) = n.as_f64() {
+                            query = query.bind(f);
+                        } else {
+                            query = query.bind(n.to_string());
+                        }
+                    }
+                    Some(serde_json::Value::Bool(b)) => {
+                        query = query.bind(*b);
+                    }
+                    Some(serde_json::Value::Null) | None => {
+                        query = query.bind(Option::<String>::None);
+                    }
+                    Some(other) => {
+                        query = query.bind(other.to_string());
+                    }
+                }
+            }
+
+            query
+                .execute(&pool)
+                .await
+                .map_err(|e| WriterError::Database(e.to_string()))?;
+        }
+
+        info!("Zapisano dane do PostgreSQL: {}/{}", host, database);
+        Ok(())
+    }
+
+    async fn write_mysql(
+        &self,
+        host: &str,
+        port: u16,
+        database: &str,
+        username: &str,
+        password: &str,
+        data: &FormattedData,
+    ) -> Result<(), WriterError> {
+        use sqlx::MySqlPool;
+
+        let url = format!(
+            "mysql://{}:{}@{}:{}/{}",
+            urlencoding_encode(username),
+            urlencoding_encode(password),
+            host,
+            port,
+            database
+        );
+        let pool = MySqlPool::connect(&url)
+            .await
+            .map_err(|e| WriterError::Database(e.to_string()))?;
+
+        if !data.records.is_empty() {
+            let first = &data.records[0];
+            let columns: Vec<String> = first
+                .iter()
+                .map(|(k, v)| {
+                    let col_type = match v {
+                        serde_json::Value::Number(n) if n.is_i64() => "BIGINT",
+                        serde_json::Value::Number(_) => "DOUBLE",
+                        serde_json::Value::Bool(_) => "BOOLEAN",
+                        _ => "TEXT",
+                    };
+                    format!("{} {}", escape_mysql_identifier(k), col_type)
+                })
+                .collect();
+            let has_id = first.keys().any(|k| k.eq_ignore_ascii_case("id"));
+            let table_cols = if has_id {
+                columns.join(", ")
+            } else {
+                format!(
+                    "_id BIGINT AUTO_INCREMENT PRIMARY KEY, {}",
+                    columns.join(", ")
+                )
+            };
+            let create_sql = format!(
+                "CREATE TABLE IF NOT EXISTS {} ({})",
+                escape_mysql_identifier(&self.table_name),
+                table_cols
+            );
+            sqlx::query(&create_sql)
+                .execute(&pool)
+                .await
+                .map_err(|e| WriterError::Database(e.to_string()))?;
+        }
+
+        for record in &data.records {
+            let keys: Vec<&String> = record.keys().collect();
+            let columns = keys
+                .iter()
+                .map(|k| escape_mysql_identifier(k))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let placeholders = vec!["?"; keys.len()].join(", ");
+            let insert_sql = format!(
+                "INSERT INTO {} ({}) VALUES ({})",
+                escape_mysql_identifier(&self.table_name),
+                columns,
+                placeholders
+            );
+
+            let mut query = sqlx::query(&insert_sql);
+            for key in keys {
+                match record.get(key) {
+                    Some(serde_json::Value::String(s)) => {
+                        query = query.bind(s.clone());
+                    }
+                    Some(serde_json::Value::Number(n)) => {
+                        if let Some(i) = n.as_i64() {
+                            query = query.bind(i);
+                        } else if let Some(f) = n.as_f64() {
+                            query = query.bind(f);
+                        } else {
+                            query = query.bind(n.to_string());
+                        }
+                    }
+                    Some(serde_json::Value::Bool(b)) => {
+                        query = query.bind(*b);
+                    }
+                    Some(serde_json::Value::Null) | None => {
+                        query = query.bind(Option::<String>::None);
+                    }
+                    Some(other) => {
+                        query = query.bind(other.to_string());
+                    }
+                }
+            }
+
+            query
+                .execute(&pool)
+                .await
+                .map_err(|e| WriterError::Database(e.to_string()))?;
+        }
+
+        info!("Zapisano dane do MySQL: {}/{}", host, database);
         Ok(())
     }
 }
 
 fn escape_sql_identifier(s: &str) -> String {
-    // SQLite identifiers should not contain special chars; wrap in quotes if needed
-    // Simple approach: wrap all in double quotes and escape embedded double quotes
     format!("\"{}\"", s.replace('"', "\"\""))
+}
+
+fn escape_mysql_identifier(s: &str) -> String {
+    format!("`{}`", s.replace('`', "``"))
+}
+
+fn urlencoding_encode(s: &str) -> String {
+    let mut encoded = String::new();
+    for b in s.bytes() {
+        if b.is_ascii_alphanumeric() || b == b'-' || b == b'_' || b == b'.' || b == b'~' {
+            encoded.push(b as char);
+        } else {
+            encoded.push_str(&format!("%{:02X}", b));
+        }
+    }
+    encoded
 }
 
 #[cfg(test)]
@@ -239,6 +534,41 @@ mod tests {
     fn test_escape_sql_identifier() {
         assert_eq!(escape_sql_identifier("users"), "\"users\"");
         assert_eq!(escape_sql_identifier("user\"s"), "\"user\"\"s\"");
+    }
+
+    #[test]
+    fn test_escape_mysql_identifier() {
+        assert_eq!(escape_mysql_identifier("users"), "`users`");
+        assert_eq!(escape_mysql_identifier("user`s"), "`user``s`");
+    }
+
+    #[test]
+    fn test_urlencoding_encode() {
+        assert_eq!(urlencoding_encode("hello world"), "hello%20world");
+        assert_eq!(urlencoding_encode("p@ss!word"), "p%40ss%21word");
+    }
+
+    #[test]
+    fn test_database_writer_constructors() {
+        let pg_writer = DatabaseWriter::new_postgres(
+            "localhost".to_string(),
+            5432,
+            "test_db".to_string(),
+            "user".to_string(),
+            "pass".to_string(),
+            Some("my_table".to_string()),
+        );
+        assert_eq!(pg_writer.table_name, "my_table");
+
+        let mysql_writer = DatabaseWriter::new_mysql(
+            "localhost".to_string(),
+            3306,
+            "test_db".to_string(),
+            "user".to_string(),
+            "pass".to_string(),
+            None,
+        );
+        assert_eq!(mysql_writer.table_name, "osom_records");
     }
 
     #[tokio::test]

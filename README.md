@@ -43,6 +43,17 @@ cargo build --release
    ./target/release/osom-api --input sample_input.csv --config config.toml
    ```
 
+### Useful CLI Options
+
+- `--dry-run`: View the generated prompt and normalized input without sending an LLM request:
+  ```bash
+  osom-api --input sample_input.csv --config config.toml --dry-run
+  ```
+- `-o, --output <path>`: Override destination file path defined in configuration:
+  ```bash
+  osom-api --input sample_input.csv --config config.toml -o /tmp/custom_output.json
+  ```
+
 ## Example Configuration
 
 ```toml

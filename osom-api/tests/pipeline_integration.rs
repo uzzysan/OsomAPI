@@ -127,6 +127,7 @@ async fn test_full_pipeline_e2e_json_output() {
     let options = PipelineOptions {
         dry_run: false,
         output_override: None,
+        pattern: None,
     };
 
     let result = run_pipeline_with_options(&config, input_path, &options).await;
@@ -177,6 +178,7 @@ async fn test_full_pipeline_e2e_sqlite_output() {
     let options = PipelineOptions {
         dry_run: false,
         output_override: None,
+        pattern: None,
     };
 
     let result = run_pipeline_with_options(&config, input_path, &options).await;
@@ -227,6 +229,7 @@ async fn test_full_pipeline_e2e_xml_output_with_override() {
     let options = PipelineOptions {
         dry_run: false,
         output_override: Some(override_path.to_string()),
+        pattern: None,
     };
 
     let result = run_pipeline_with_options(&config, input_path, &options).await;
@@ -241,4 +244,80 @@ async fn test_full_pipeline_e2e_xml_output_with_override() {
 
     let _ = tokio::fs::remove_file(override_path).await;
     let _ = server_handle.await;
+}
+
+#[tokio::test]
+async fn test_batch_pipeline_directory_processing() {
+    let mock_llm_reply = r#"[
+  {
+    "id": 100,
+    "nazwa": "Batch item",
+    "cena": 50.0,
+    "data_dodania": "2024-05-01",
+    "czy_dostepny": true
+  }
+]"#;
+
+    // Start a multi-connection mock server
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("Failed to bind mock server");
+    let addr = listener.local_addr().expect("Failed to get local addr");
+    let mock_url = format!("http://{}", addr);
+
+    let response_body = serde_json::json!({ "response": mock_llm_reply }).to_string();
+    let server_task = tokio::spawn(async move {
+        // Accept up to 2 requests for the 2 batch files
+        for _ in 0..2 {
+            if let Ok((mut socket, _)) = listener.accept().await {
+                let mut buf = [0u8; 4096];
+                let _ = socket.read(&mut buf).await;
+                let http_response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    response_body.len(),
+                    response_body
+                );
+                let _ = socket.write_all(http_response.as_bytes()).await;
+                let _ = socket.flush().await;
+            }
+        }
+    });
+
+    let batch_dir = "/tmp/opencode/test_batch_input";
+    let _ = tokio::fs::remove_dir_all(batch_dir).await;
+    tokio::fs::create_dir_all(batch_dir).await.unwrap();
+
+    let file1 = format!("{}/doc1.csv", batch_dir);
+    let file2 = format!("{}/doc2.json", batch_dir);
+    tokio::fs::write(&file1, "id,nazwa,cena,data_dodania,czy_dostepny\n1,A,10,2024-01-01,true\n").await.unwrap();
+    tokio::fs::write(&file2, r#"{"id": 2, "nazwa": "B", "cena": 20, "data_dodania": "2024-01-02", "czy_dostepny": false}"#).await.unwrap();
+
+    let out_path = "/tmp/opencode/test_batch_out.json";
+    let _ = tokio::fs::remove_file(out_path).await;
+
+    let config = create_test_config(
+        mock_url,
+        Destination::Json {
+            path: out_path.to_string(),
+            pretty: true,
+        },
+    );
+
+    let options = PipelineOptions {
+        dry_run: false,
+        output_override: None,
+        pattern: None,
+    };
+
+    let result = run_pipeline_with_options(&config, batch_dir, &options).await;
+    assert!(result.is_ok(), "Batch pipeline failed: {:?}", result.err());
+
+    let content = tokio::fs::read_to_string(out_path).await.unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&content).unwrap();
+    let records = parsed.as_array().unwrap();
+    assert_eq!(records.len(), 2, "Expected 2 records from 2 files");
+
+    let _ = tokio::fs::remove_file(out_path).await;
+    let _ = tokio::fs::remove_dir_all(batch_dir).await;
+    let _ = server_task.await;
 }
