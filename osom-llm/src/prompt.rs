@@ -1,18 +1,20 @@
-use osom_config::{FieldDef, FieldType, OutputSchema};
+use osom_config::{FieldDef, FieldMapping, FieldType, OutputSchema};
 
 /// Buduje prompt LLM na podstawie danych wejściowych i schematu wyjściowego
 pub struct PromptBuilder;
 
 impl PromptBuilder {
     /// Tworzy pełny prompt z danych wejściowych i schematu wyjściowego
-    ///
-    /// # Arguments
-    /// * `input` — Tekstowe dane wejściowe do przetworzenia
-    /// * `schema` — Schemat wyjściowy definiujący oczekiwaną strukturę
-    ///
-    /// # Returns
-    /// Gotowy prompt do wysłania do modelu LLM
     pub fn build(input: &str, schema: &OutputSchema) -> String {
+        Self::build_with_mappings(input, schema, &[])
+    }
+
+    /// Tworzy pełny prompt z danych wejściowych, schematu wyjściowego oraz opcjonalnych reguł mapowania pól
+    pub fn build_with_mappings(
+        input: &str,
+        schema: &OutputSchema,
+        mappings: &[FieldMapping],
+    ) -> String {
         let mut prompt = format!(
             "Przetwórz poniższe dane wejściowe zgodnie ze schematem '{}'.\n\n",
             schema.name
@@ -28,6 +30,35 @@ impl PromptBuilder {
         for field in &schema.fields {
             let desc = Self::describe_field(field);
             prompt.push_str(&format!("- {}: {}\n", field.name, desc));
+        }
+
+        let mut mapping_instructions = Vec::new();
+        let mut ignored_fields = Vec::new();
+
+        for m in mappings {
+            if m.ignore {
+                ignored_fields.push(m.input_field.clone());
+            } else if let Some(ref target) = m.output_field {
+                mapping_instructions.push(format!(
+                    "- Pole wejściowe '{}' przypisz do pola wyjściowego '{}'",
+                    m.input_field, target
+                ));
+            }
+        }
+
+        if !mapping_instructions.is_empty() {
+            prompt.push_str("\n## Mapowanie pól wejściowych na wyjściowe:\n");
+            for inst in mapping_instructions {
+                prompt.push_str(&inst);
+                prompt.push('\n');
+            }
+        }
+
+        if !ignored_fields.is_empty() {
+            prompt.push_str(&format!(
+                "\nUWAGA: Całkowicie zignoruj i pomiń następujące pola z danych wejściowych: {}.\n",
+                ignored_fields.join(", ")
+            ));
         }
 
         prompt.push_str("\n## Instrukcje\n");
@@ -271,5 +302,28 @@ mod tests {
         let desc = PromptBuilder::describe_field(&field);
         assert!(desc.contains("obiekt zagnieżdżony"));
         assert!(desc.contains("2 polami"));
+    }
+
+    #[test]
+    fn test_build_prompt_with_mappings() {
+        let schema = create_test_schema();
+        let mappings = vec![
+            FieldMapping {
+                input_field: "NazwaFirmy".to_string(),
+                output_field: Some("name".to_string()),
+                ignore: false,
+            },
+            FieldMapping {
+                input_field: "Tymczasowe".to_string(),
+                output_field: None,
+                ignore: true,
+            },
+        ];
+
+        let prompt = PromptBuilder::build_with_mappings("test input", &schema, &mappings);
+        assert!(prompt.contains("NazwaFirmy"));
+        assert!(prompt.contains("przypisz do pola wyjściowego 'name'"));
+        assert!(prompt.contains("Tymczasowe"));
+        assert!(prompt.contains("Całkowicie zignoruj"));
     }
 }

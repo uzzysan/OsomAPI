@@ -4,11 +4,12 @@ OsomAPI is a Rust-based application that enables data processing across multiple
 
 ## Key Features
 
-- **Multi-format Parsing** – Native support for JSON, XML, CSV, and PDF files
-- **Flexible LLM Configuration** – Choose between local models (Ollama) and cloud providers (OpenAI GPT, Google Gemini, Anthropic Claude, GitHub Copilot)
+- **Multi-format Parsing** – Native support for JSON, XML, CSV, and PDF files with automatic format & magic-byte detection
+- **Multi-Endpoint API Server & Web UI** – Built-in Axum HTTP server and responsive browser dashboard with visual schema building, input field inspection, and live testing
+- **Flexible LLM Configuration** – Choose between local models (Ollama) and cloud providers (OpenAI GPT, Google Gemini, Anthropic Claude, GitHub Copilot) with exponential backoff retries
 - **Customizable Output Schema** – Fine-grained control over structure, data types, date/decimal formats, and case normalization
-- **Multiple Output Destinations** – Export to JSON, XML, or SQLite database
-- **Asynchronous Architecture** – Built on Tokio for high-throughput performance
+- **Multiple Output Destinations** – Export to JSON, XML, SQLite, PostgreSQL, or MySQL databases
+- **Batch Processing** – Process entire directories of incoming documents into a single consolidated output
 - **Comprehensive Logging** – Powered by `tracing` for seamless observability and debugging
 
 ## Quick Start
@@ -27,32 +28,34 @@ cd osom-api
 cargo build --release
 ```
 
-### First Run
+### Running the Web UI & API Server
 
-1. Create a configuration file `config.toml` (see [Example Configuration](#example-configuration) or copy from `config.example.toml`):
-   ```bash
-   cp config.example.toml config.toml
-   ```
-2. Prepare an input file (e.g. `sample_input.csv`).
-3. Run the application:
-   ```bash
-   cargo run --bin osom-api -- --input sample_input.csv --config config.toml
-   ```
-   Or using the compiled binary:
-   ```bash
-   ./target/release/osom-api --input sample_input.csv --config config.toml
-   ```
+Launch the standalone HTTP server with embedded web dashboard:
+```bash
+cargo run --bin osom-api -- --serve
+```
+Then open [http://localhost:8080](http://localhost:8080) in your browser to visually manage endpoints, inspect sample files, build schemas, and test prompts.
+
+### CLI Mode (Batch or Single File)
+
+Process a file directly through the CLI:
+```bash
+cargo run --bin osom-api -- --input sample_input.csv --config config.toml
+```
+
+Process a directory of files in batch mode:
+```bash
+cargo run --bin osom-api -- --input ./incoming/ --config config.toml -p "*.csv" -o results.json
+```
 
 ### Useful CLI Options
 
-- `--dry-run`: View the generated prompt and normalized input without sending an LLM request:
-  ```bash
-  osom-api --input sample_input.csv --config config.toml --dry-run
-  ```
-- `-o, --output <path>`: Override destination file path defined in configuration:
-  ```bash
-  osom-api --input sample_input.csv --config config.toml -o /tmp/custom_output.json
-  ```
+- `--serve`: Run the HTTP REST API server and embedded Web UI dashboard (default if `--input` omitted).
+- `--host <HOST>`: Server bind host (default: `0.0.0.0`).
+- `--port <PORT>`: Server listen port (default: `8080`).
+- `--dry-run`: View the generated prompt without calling the LLM.
+- `-o, --output <path>`: Override destination file path defined in configuration.
+- `-p, --pattern <pattern>`: Filter files when scanning a directory (e.g. `*.csv`, `*.pdf`).
 
 ## Example Configuration
 

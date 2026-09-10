@@ -35,6 +35,7 @@ async fn start_mock_ollama_server(response_json: &str) -> (String, tokio::task::
 
 fn create_test_config(ollama_url: String, destination: Destination) -> Config {
     Config {
+        server: osom_config::ServerConfig::default(),
         llm: LlmConfig::Ollama {
             model: "mock-model".to_string(),
             url: ollama_url,
@@ -88,6 +89,7 @@ fn create_test_config(ollama_url: String, destination: Destination) -> Config {
             },
             destination,
         },
+        endpoints: Vec::new(),
         settings: osom_config::AppSettings {
             request_timeout_secs: 10,
             max_retries: 1,

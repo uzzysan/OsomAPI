@@ -81,56 +81,95 @@ async fn run_single_pipeline(
         .await
         .map_err(|e| PipelineError::Config(format!("Nie można odczytać pliku: {}", e)))?;
 
-    if input_bytes.is_empty() {
-        return Err(PipelineError::EmptyInput);
-    }
-
     let ext = file_path.extension().and_then(|e| e.to_str());
 
-    info!("Parsowanie danych wejściowych...");
-    let parsed = parse_auto(&input_bytes, ext)
-        .await
-        .map_err(|e| PipelineError::Parser(e.to_string()))?;
+    let mut endpoint = config
+        .find_endpoint("default")
+        .unwrap_or_else(|| osom_config::EndpointConfig {
+            id: "default".to_string(),
+            name: config.output.schema.name.clone(),
+            description: String::new(),
+            llm: None,
+            output: config.output.clone(),
+            field_mappings: Vec::new(),
+        });
 
-    info!("Budowanie promptu LLM...");
-    let prompt = PromptBuilder::build(&parsed.content, &config.output.schema);
+    if options.output_override.is_some() {
+        endpoint.output.destination = resolve_destination(config, options);
+    }
+
+    let (prompt, _) = run_endpoint_pipeline(
+        config,
+        &endpoint,
+        &input_bytes,
+        ext,
+        options.dry_run,
+        true,
+    )
+    .await?;
 
     if options.dry_run {
         info!("--- TRYB DRY-RUN (wygenerowany prompt) ---");
         println!("{}", prompt);
-        return Ok(());
+    } else {
+        info!("Potok zakończony pomyślnie.");
     }
 
-    info!("Wysyłanie zapytania do modelu LLM...");
-    let client = build_llm_client_with_settings(&config.llm, &config.settings)
+    Ok(())
+}
+
+/// Wykonuje potok dla konkretnego endpointu na surowych bajtach danych.
+///
+/// Zwraca wygenerowany prompt oraz sformatowane rekordy.
+pub async fn run_endpoint_pipeline(
+    config: &Config,
+    endpoint: &osom_config::EndpointConfig,
+    input_bytes: &[u8],
+    extension: Option<&str>,
+    dry_run: bool,
+    write_to_destination: bool,
+) -> Result<(String, FormattedData), PipelineError> {
+    if input_bytes.is_empty() {
+        return Err(PipelineError::EmptyInput);
+    }
+
+    let parsed = parse_auto(input_bytes, extension)
+        .await
+        .map_err(|e| PipelineError::Parser(e.to_string()))?;
+
+    let prompt = PromptBuilder::build_with_mappings(
+        &parsed.content,
+        &endpoint.output.schema,
+        &endpoint.field_mappings,
+    );
+
+    if dry_run {
+        return Ok((prompt, FormattedData { records: Vec::new() }));
+    }
+
+    let llm_cfg = endpoint.llm.as_ref().unwrap_or(&config.llm);
+    let client = build_llm_client_with_settings(llm_cfg, &config.settings)
         .map_err(|e| PipelineError::Llm(e.to_string()))?;
+
     let llm_response = client
         .send(&prompt)
         .await
         .map_err(|e| PipelineError::Llm(e.to_string()))?;
 
-    info!("Parsowanie odpowiedzi LLM...");
     let raw_json = extract_json_from_markdown(&llm_response)
         .map_err(|e| PipelineError::Llm(format!("Nie można sparsować odpowiedzi jako JSON: {}", e)))?;
 
-    info!("Walidacja zgodności ze schematem...");
-    validate(&raw_json, &config.output.schema)
+    validate(&raw_json, &endpoint.output.schema)
         .map_err(|e| PipelineError::Validation(e.to_string()))?;
 
-    info!("Formatowanie danych wyjściowych...");
-    let formatted = format_values(&raw_json, &config.output.schema)
+    let formatted = format_values(&raw_json, &endpoint.output.schema)
         .map_err(|e| PipelineError::Formatting(e.to_string()))?;
 
-    if formatted.records.is_empty() {
-        warn!("Ostrzeżenie: brak rekordów do zapisu");
+    if write_to_destination {
+        write_destination(&endpoint.output.destination, &formatted).await?;
     }
 
-    info!("Zapisywanie wyników...");
-    let destination = resolve_destination(config, options);
-    write_destination(&destination, &formatted).await?;
-
-    info!("Potok zakończony pomyślnie.");
-    Ok(())
+    Ok((prompt, formatted))
 }
 
 async fn run_batch_pipeline(
@@ -207,34 +246,35 @@ async fn run_batch_pipeline(
         }
 
         let ext = file_path.extension().and_then(|e| e.to_str());
-        let parsed = parse_auto(&input_bytes, ext)
-            .await
-            .map_err(|e| PipelineError::Parser(format!("{}: {}", display_name, e)))?;
 
-        let prompt = PromptBuilder::build(&parsed.content, &config.output.schema);
+        let endpoint = config
+            .find_endpoint("default")
+            .unwrap_or_else(|| osom_config::EndpointConfig {
+                id: "default".to_string(),
+                name: config.output.schema.name.clone(),
+                description: String::new(),
+                llm: None,
+                output: config.output.clone(),
+                field_mappings: Vec::new(),
+            });
+
+        let (prompt, formatted) = run_endpoint_pipeline(
+            config,
+            &endpoint,
+            &input_bytes,
+            ext,
+            options.dry_run,
+            false,
+        )
+        .await
+        .map_err(|e| PipelineError::Config(format!("{}: {}", display_name, e)))?;
+
         if options.dry_run {
             info!("--- DRY-RUN [{}] ---", display_name);
             println!("=== Plik: {} ===\n{}\n", display_name, prompt);
-            continue;
+        } else {
+            all_records.extend(formatted.records);
         }
-
-        let client = build_llm_client_with_settings(&config.llm, &config.settings)
-            .map_err(|e| PipelineError::Llm(e.to_string()))?;
-        let llm_response = client
-            .send(&prompt)
-            .await
-            .map_err(|e| PipelineError::Llm(format!("{}: {}", display_name, e)))?;
-
-        let raw_json = extract_json_from_markdown(&llm_response)
-            .map_err(|e| PipelineError::Llm(format!("{}: {}", display_name, e)))?;
-
-        validate(&raw_json, &config.output.schema)
-            .map_err(|e| PipelineError::Validation(format!("{}: {}", display_name, e)))?;
-
-        let formatted = format_values(&raw_json, &config.output.schema)
-            .map_err(|e| PipelineError::Formatting(format!("{}: {}", display_name, e)))?;
-
-        all_records.extend(formatted.records);
     }
 
     if options.dry_run {
@@ -310,7 +350,7 @@ async fn write_destination(
 }
 
 /// Próbuje wyciągnąć JSON z bloku markdown lub zwraca sparsowany JSON.
-fn extract_json_from_markdown(text: &str) -> Result<serde_json::Value, serde_json::Error> {
+pub fn extract_json_from_markdown(text: &str) -> Result<serde_json::Value, serde_json::Error> {
     // Szukaj bloku ```json ... ```
     if let Some(start) = text.find("```json") {
         let rest = &text[start + 7..];

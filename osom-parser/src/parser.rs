@@ -159,6 +159,95 @@ pub async fn parse_auto(
     parse_by_source_type(source_type, input).await
 }
 
+/// Próbka wykrytego pola wejściowego (używana m.in. w interfejsie graficznym do wizualnego mapowania).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct InputFieldSample {
+    /// Nazwa pola wejściowego (np. nagłówek kolumny CSV lub klucz JSON)
+    pub name: String,
+    /// Przykładowa wartość znaleziona w danych
+    pub sample_value: Option<String>,
+}
+
+/// Ekstrahuje wykryte pola wejściowe oraz przykładowe wartości z podanych danych.
+pub fn extract_input_fields(
+    input: &[u8],
+    extension: Option<&str>,
+) -> Result<Vec<InputFieldSample>, ParserError> {
+    let source_type = detect_source_type(input, extension)?;
+    match source_type {
+        SourceType::Csv => {
+            let mut reader = csv::ReaderBuilder::new()
+                .has_headers(true)
+                .from_reader(input);
+            let headers = reader
+                .headers()
+                .map_err(ParserError::from)?
+                .clone();
+
+            let first_record = reader.records().next().and_then(|r| r.ok());
+            let mut fields = Vec::new();
+            for (i, h) in headers.iter().enumerate() {
+                let sample_value = first_record
+                    .as_ref()
+                    .and_then(|rec| rec.get(i))
+                    .map(|s| s.to_string());
+                fields.push(InputFieldSample {
+                    name: h.to_string(),
+                    sample_value,
+                });
+            }
+            Ok(fields)
+        }
+        SourceType::Json => {
+            let val: Value = serde_json::from_slice(input)?;
+            let obj = match val {
+                Value::Array(ref arr) => arr.first().and_then(|v| v.as_object()),
+                Value::Object(ref o) => Some(o),
+                _ => None,
+            };
+            if let Some(map) = obj {
+                let mut fields = Vec::new();
+                for (k, v) in map {
+                    let sample_value = match v {
+                        Value::String(s) => Some(s.clone()),
+                        Value::Number(n) => Some(n.to_string()),
+                        Value::Bool(b) => Some(b.to_string()),
+                        Value::Null => None,
+                        other => Some(other.to_string()),
+                    };
+                    fields.push(InputFieldSample {
+                        name: k.clone(),
+                        sample_value,
+                    });
+                }
+                Ok(fields)
+            } else {
+                Ok(vec![InputFieldSample {
+                    name: "payload".to_string(),
+                    sample_value: Some(val.to_string()),
+                }])
+            }
+        }
+        SourceType::Xml => {
+            let value = xml_to_value(input)?;
+            let mut fields = Vec::new();
+            if let Value::Object(map) = value {
+                for (k, v) in map {
+                    fields.push(InputFieldSample {
+                        name: k,
+                        sample_value: Some(v.to_string()),
+                    });
+                }
+            }
+            Ok(fields)
+        }
+        SourceType::Pdf => Ok(vec![InputFieldSample {
+            name: "document_text".to_string(),
+            sample_value: Some("Tekst wyodrębniony z dokumentu PDF".to_string()),
+        }]),
+    }
+}
+
 // ─────────────────────────────────────────────
 // JsonParser
 // ─────────────────────────────────────────────
@@ -653,6 +742,27 @@ mod tests {
         let parsed = parse_auto(json_data, None).await.unwrap();
         assert_eq!(parsed.source_type, SourceType::Json);
         assert!(parsed.content.contains("\"key\": \"value\""));
+    }
+
+    #[test]
+    fn test_extract_input_fields_csv() {
+        let csv = b"first_name,last_name,age\nAlice,Smith,30\n";
+        let fields = extract_input_fields(csv, Some("csv")).unwrap();
+        assert_eq!(fields.len(), 3);
+        assert_eq!(fields[0].name, "first_name");
+        assert_eq!(fields[0].sample_value.as_deref(), Some("Alice"));
+        assert_eq!(fields[2].name, "age");
+        assert_eq!(fields[2].sample_value.as_deref(), Some("30"));
+    }
+
+    #[test]
+    fn test_extract_input_fields_json() {
+        let json = br#"[{"sku": "SKU123", "price": 49.99}]"#;
+        let fields = extract_input_fields(json, None).unwrap();
+        assert_eq!(fields.len(), 2);
+        let names: Vec<&str> = fields.iter().map(|f| f.name.as_str()).collect();
+        assert!(names.contains(&"sku"));
+        assert!(names.contains(&"price"));
     }
 
     // ─── SourceType Display ───

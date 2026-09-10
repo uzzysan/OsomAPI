@@ -1,18 +1,84 @@
 use serde::{Deserialize, Serialize};
 
 /// Root configuration structure
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Config {
-    /// LLM provider configuration
+    /// Server configuration (host, port)
+    #[serde(default)]
+    pub server: ServerConfig,
+    /// LLM provider configuration (global default)
     pub llm: LlmConfig,
-    /// Output configuration (schema + destination)
+    /// Output configuration (schema + destination) for default/standalone pipeline
     pub output: OutputConfig,
     /// Optional application settings
     #[serde(default)]
     pub settings: AppSettings,
+    /// Configured API endpoints (e.g. /api/v1/process/invoices, /api/v1/process/logistics)
+    #[serde(default)]
+    pub endpoints: Vec<EndpointConfig>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Server configuration
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ServerConfig {
+    #[serde(default = "default_server_host")]
+    pub host: String,
+    #[serde(default = "default_server_port")]
+    pub port: u16,
+}
+
+impl Default for ServerConfig {
+    fn default() -> Self {
+        Self {
+            host: default_server_host(),
+            port: default_server_port(),
+        }
+    }
+}
+
+fn default_server_host() -> String {
+    "0.0.0.0".to_string()
+}
+
+fn default_server_port() -> u16 {
+    8080
+}
+
+/// Mapping from an input field to an output schema field, with optional ignore rule.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FieldMapping {
+    /// Input field name (from CSV header, JSON key, etc.)
+    pub input_field: String,
+    /// Target output field name (if mapped)
+    #[serde(default)]
+    pub output_field: Option<String>,
+    /// Whether this input field should be ignored by the LLM
+    #[serde(default)]
+    pub ignore: bool,
+}
+
+/// Dedicated configuration for a named processing endpoint.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct EndpointConfig {
+    /// Unique identifier / URL slug (e.g. "invoices", "logistics")
+    pub id: String,
+    /// Human-friendly display name
+    #[serde(default)]
+    pub name: String,
+    /// Description of the endpoint
+    #[serde(default)]
+    pub description: String,
+    /// Optional endpoint-specific LLM override
+    #[serde(default)]
+    pub llm: Option<LlmConfig>,
+    /// Output configuration (schema + destination)
+    pub output: OutputConfig,
+    /// Optional field mappings / ignore list
+    #[serde(default)]
+    pub field_mappings: Vec<FieldMapping>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AppSettings {
     #[serde(default = "default_timeout")]
     pub request_timeout_secs: u64,
@@ -37,7 +103,7 @@ fn default_max_retries() -> u32 { 3 }
 fn default_log_level() -> String { "info".to_string() }
 
 /// LLM provider configuration variants
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "provider", rename_all = "lowercase")]
 pub enum LlmConfig {
     /// Local Ollama instance
@@ -79,7 +145,7 @@ fn default_claude_model() -> String { "claude-3-5-sonnet-20241022".to_string() }
 fn default_copilot_model() -> String { "gpt-4o".to_string() }
 
 /// Output configuration: schema + destination
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct OutputConfig {
     /// Desired output schema definition
     pub schema: OutputSchema,
@@ -88,7 +154,7 @@ pub struct OutputConfig {
 }
 
 /// Schema definition for output data
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct OutputSchema {
     /// Name of the output entity / collection
     pub name: String,
@@ -264,7 +330,7 @@ fn default_date_format() -> String { "%Y-%m-%d".to_string() }
 fn default_datetime_format() -> String { "%Y-%m-%dT%H:%M:%S".to_string() }
 
 /// Letter case normalization options
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum CaseNormalization {
     Lower,
@@ -276,7 +342,7 @@ pub enum CaseNormalization {
 }
 
 /// Output destination variants
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum Destination {
     Json {
@@ -300,7 +366,7 @@ pub enum Destination {
 fn default_pretty() -> bool { true }
 
 /// Database connection configuration
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "driver", rename_all = "lowercase")]
 pub enum DbConnection {
     Sqlite {
@@ -344,21 +410,108 @@ impl Config {
         Ok(config)
     }
 
+    /// Save configuration to a TOML file
+    pub fn save_to_toml_file(&self, path: &str) -> Result<(), ConfigError> {
+        let content = toml::to_string_pretty(self)?;
+        std::fs::write(path, content)?;
+        Ok(())
+    }
+
+    /// Save configuration to a JSON file
+    pub fn save_to_json_file(&self, path: &str) -> Result<(), ConfigError> {
+        let content = serde_json::to_string_pretty(self)?;
+        std::fs::write(path, content)?;
+        Ok(())
+    }
+
+    /// Finds a configured endpoint by ID, falling back to synthesising one from global `output`
+    /// if id == "default" or if the endpoint list is empty.
+    pub fn find_endpoint(&self, id: &str) -> Option<EndpointConfig> {
+        if let Some(ep) = self.endpoints.iter().find(|e| e.id == id) {
+            return Some(ep.clone());
+        }
+        if id == "default" || (self.endpoints.is_empty() && id == "default") {
+            return Some(EndpointConfig {
+                id: "default".to_string(),
+                name: self.output.schema.name.clone(),
+                description: format!("Endpoint for {}", self.output.schema.name),
+                llm: None,
+                output: self.output.clone(),
+                field_mappings: Vec::new(),
+            });
+        }
+        None
+    }
+
+    /// Returns the full list of endpoints, synthesizing a default one if none are configured.
+    pub fn list_endpoints(&self) -> Vec<EndpointConfig> {
+        if self.endpoints.is_empty() {
+            vec![EndpointConfig {
+                id: "default".to_string(),
+                name: self.output.schema.name.clone(),
+                description: format!("Endpoint for {}", self.output.schema.name),
+                llm: None,
+                output: self.output.clone(),
+                field_mappings: Vec::new(),
+            }]
+        } else {
+            self.endpoints.clone()
+        }
+    }
+
+    /// Adds or updates a named endpoint
+    pub fn add_or_update_endpoint(&mut self, endpoint: EndpointConfig) {
+        if let Some(pos) = self.endpoints.iter().position(|e| e.id == endpoint.id) {
+            self.endpoints[pos] = endpoint;
+        } else {
+            self.endpoints.push(endpoint);
+        }
+    }
+
+    /// Removes an endpoint by ID. Returns true if an endpoint was found and removed.
+    pub fn remove_endpoint(&mut self, id: &str) -> bool {
+        let initial_len = self.endpoints.len();
+        self.endpoints.retain(|e| e.id != id);
+        self.endpoints.len() < initial_len
+    }
+
     /// Validate the configuration
     pub fn validate(&self) -> Result<(), ConfigError> {
-        // Ensure at least one field is defined in schema
-        if self.output.schema.fields.is_empty() {
+        // If endpoints are configured, ensure each has fields and a valid ID
+        if !self.endpoints.is_empty() {
+            for ep in &self.endpoints {
+                if ep.id.trim().is_empty() {
+                    return Err(ConfigError::Validation("Endpoint ID cannot be empty".into()));
+                }
+                if ep.output.schema.fields.is_empty() {
+                    return Err(ConfigError::Validation(format!(
+                        "Endpoint '{}' output schema must define at least one field",
+                        ep.id
+                    )));
+                }
+                if let Some(ref custom_llm) = ep.llm {
+                    Self::validate_llm(custom_llm)?;
+                }
+            }
+        } else if self.output.schema.fields.is_empty() {
             return Err(ConfigError::Validation("Output schema must define at least one field".into()));
         }
-        // Validate API keys are present for cloud providers
-        match &self.llm {
+
+        Self::validate_llm(&self.llm)?;
+        Ok(())
+    }
+
+    fn validate_llm(llm: &LlmConfig) -> Result<(), ConfigError> {
+        match llm {
             LlmConfig::Ollama { .. } => {}
             LlmConfig::Gemini { api_key, .. }
             | LlmConfig::OpenAi { api_key, .. }
             | LlmConfig::Anthropic { api_key, .. }
             | LlmConfig::Copilot { api_key, .. } => {
                 if api_key.trim().is_empty() {
-                    return Err(ConfigError::Validation("API key cannot be empty for cloud LLM providers".into()));
+                    return Err(ConfigError::Validation(
+                        "API key cannot be empty for cloud LLM providers".into(),
+                    ));
                 }
             }
         }
@@ -372,6 +525,8 @@ pub enum ConfigError {
     Io(#[from] std::io::Error),
     #[error("TOML parse error: {0}")]
     Toml(#[from] toml::de::Error),
+    #[error("TOML serialize error: {0}")]
+    TomlSer(#[from] toml::ser::Error),
     #[error("JSON parse error: {0}")]
     Json(#[from] serde_json::Error),
     #[error("Validation error: {0}")]
@@ -617,5 +772,186 @@ table_name = "records"
         assert_eq!(config.settings.request_timeout_secs, 120);
         assert_eq!(config.settings.max_retries, 3);
         assert_eq!(config.settings.log_level, "info");
+    }
+
+    #[test]
+    fn test_server_defaults() {
+        let toml_str = r#"
+[llm]
+provider = "ollama"
+model = "llama3"
+[output]
+[output.schema]
+name = "s"
+[[output.schema.fields]]
+name = "f"
+type = "string"
+[output.destination]
+type = "json"
+path = "out.json"
+"#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.server.host, "0.0.0.0");
+        assert_eq!(config.server.port, 8080);
+    }
+
+    #[test]
+    fn test_endpoints_crud_and_finding() {
+        let toml_str = r#"
+[server]
+host = "127.0.0.1"
+port = 9090
+
+[llm]
+provider = "ollama"
+model = "llama3"
+
+[output]
+[output.schema]
+name = "default_schema"
+[[output.schema.fields]]
+name = "default_field"
+type = "string"
+[output.destination]
+type = "json"
+path = "default.json"
+
+[[endpoints]]
+id = "invoices"
+name = "Invoices Endpoint"
+description = "Processes supplier invoices"
+[endpoints.output]
+[endpoints.output.schema]
+name = "invoices"
+[[endpoints.output.schema.fields]]
+name = "inv_no"
+type = "string"
+[endpoints.output.destination]
+type = "json"
+path = "invoices.json"
+[[endpoints.field_mappings]]
+input_field = "NumerFaktury"
+output_field = "inv_no"
+[[endpoints.field_mappings]]
+input_field = "Niepotrzebne"
+ignore = true
+"#;
+        let mut config: Config = toml::from_str(toml_str).unwrap();
+        config.validate().unwrap();
+
+        assert_eq!(config.server.port, 9090);
+        assert_eq!(config.server.host, "127.0.0.1");
+
+        let ep = config.find_endpoint("invoices").expect("Endpoint not found");
+        assert_eq!(ep.name, "Invoices Endpoint");
+        assert_eq!(ep.field_mappings.len(), 2);
+        assert!(ep.field_mappings[1].ignore);
+
+        // Test list_endpoints
+        let list = config.list_endpoints();
+        assert_eq!(list.len(), 1);
+
+        // Add a new endpoint
+        let new_ep = EndpointConfig {
+            id: "logistics".to_string(),
+            name: "Logistics".to_string(),
+            description: "Cargo tracking".to_string(),
+            llm: None,
+            output: OutputConfig {
+                schema: OutputSchema {
+                    name: "cargo".to_string(),
+                    fields: vec![FieldDef {
+                        name: "tracking_id".to_string(),
+                        field_type: FieldType::String,
+                        required: true,
+                        description: "".to_string(),
+                        default: None,
+                    }],
+                    case_normalization: None,
+                },
+                destination: Destination::Json {
+                    path: "cargo.json".to_string(),
+                    pretty: true,
+                },
+            },
+            field_mappings: Vec::new(),
+        };
+
+        config.add_or_update_endpoint(new_ep);
+        assert_eq!(config.endpoints.len(), 2);
+        assert!(config.find_endpoint("logistics").is_some());
+
+        // Remove endpoint
+        assert!(config.remove_endpoint("invoices"));
+        assert_eq!(config.endpoints.len(), 1);
+        assert!(config.find_endpoint("invoices").is_none());
+    }
+
+    #[test]
+    fn test_save_and_reload_config_toml() {
+        let temp_path = "/tmp/opencode/test_save_config.toml";
+        let _ = std::fs::remove_file(temp_path);
+
+        let config = Config {
+            server: ServerConfig {
+                host: "127.0.0.1".to_string(),
+                port: 8888,
+            },
+            llm: LlmConfig::Ollama {
+                model: "llama3".to_string(),
+                url: "http://localhost:11434".to_string(),
+            },
+            output: OutputConfig {
+                schema: OutputSchema {
+                    name: "test".to_string(),
+                    fields: vec![FieldDef {
+                        name: "id".to_string(),
+                        field_type: FieldType::Integer,
+                        required: true,
+                        description: "".to_string(),
+                        default: None,
+                    }],
+                    case_normalization: None,
+                },
+                destination: Destination::Json {
+                    path: "out.json".to_string(),
+                    pretty: true,
+                },
+            },
+            settings: AppSettings::default(),
+            endpoints: vec![EndpointConfig {
+                id: "orders".to_string(),
+                name: "Orders".to_string(),
+                description: "".to_string(),
+                llm: None,
+                output: OutputConfig {
+                    schema: OutputSchema {
+                        name: "orders".to_string(),
+                        fields: vec![FieldDef {
+                            name: "order_id".to_string(),
+                            field_type: FieldType::Integer,
+                            required: true,
+                            description: "".to_string(),
+                            default: None,
+                        }],
+                        case_normalization: None,
+                    },
+                    destination: Destination::Json {
+                        path: "orders.json".to_string(),
+                        pretty: true,
+                    },
+                },
+                field_mappings: Vec::new(),
+            }],
+        };
+
+        config.save_to_toml_file(temp_path).expect("Failed to save toml");
+
+        let reloaded = Config::from_toml_file(temp_path).expect("Failed to reload toml");
+        assert_eq!(reloaded.server.port, 8888);
+        assert_eq!(reloaded.endpoints.len(), 1);
+        assert_eq!(reloaded.endpoints[0].id, "orders");
+
+        let _ = std::fs::remove_file(temp_path);
     }
 }

@@ -1,0 +1,1132 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>OsomAPI Dashboard & Endpoint Manager</title>
+  <style>
+    :root {
+      --bg-base: #0f172a;
+      --bg-surface: #1e293b;
+      --bg-surface-elevated: #334155;
+      --border-subtle: #475569;
+      --border-focus: #3b82f6;
+      --text-main: #f8fafc;
+      --text-muted: #94a3b8;
+      --primary: #3b82f6;
+      --primary-hover: #2563eb;
+      --success: #10b981;
+      --warning: #f59e0b;
+      --danger: #ef4444;
+      --radius: 8px;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      background-color: var(--bg-base);
+      color: var(--text-main);
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+      overflow: hidden;
+    }
+
+    /* Top Bar */
+    header {
+      background: var(--bg-surface);
+      border-bottom: 1px solid var(--border-subtle);
+      padding: 12px 24px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-shrink: 0;
+    }
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      font-weight: 700;
+      font-size: 1.25rem;
+      letter-spacing: -0.025em;
+    }
+    .brand-badge {
+      font-size: 0.75rem;
+      background: rgba(59, 130, 246, 0.2);
+      color: #60a5fa;
+      padding: 2px 8px;
+      border-radius: 9999px;
+      border: 1px solid rgba(59, 130, 246, 0.4);
+    }
+    .header-actions {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+    .status-pill {
+      font-size: 0.8rem;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 10px;
+      border-radius: 9999px;
+      background: rgba(16, 185, 129, 0.15);
+      color: #34d399;
+      border: 1px solid rgba(16, 185, 129, 0.3);
+    }
+    .status-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: #10b981;
+    }
+
+    /* Layout */
+    .app-body {
+      display: flex;
+      flex: 1;
+      overflow: hidden;
+    }
+
+    /* Sidebar */
+    aside {
+      width: 280px;
+      background: var(--bg-surface);
+      border-right: 1px solid var(--border-subtle);
+      display: flex;
+      flex-direction: column;
+      flex-shrink: 0;
+    }
+    .sidebar-header {
+      padding: 16px;
+      border-bottom: 1px solid var(--border-subtle);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .sidebar-title {
+      font-size: 0.85rem;
+      font-weight: 600;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+    .endpoint-list {
+      flex: 1;
+      overflow-y: auto;
+      padding: 12px 8px;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+    .endpoint-item {
+      padding: 10px 12px;
+      border-radius: var(--radius);
+      cursor: pointer;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      border: 1px solid transparent;
+      transition: all 0.15s ease;
+    }
+    .endpoint-item:hover {
+      background: var(--bg-surface-elevated);
+    }
+    .endpoint-item.active {
+      background: rgba(59, 130, 246, 0.15);
+      border-color: rgba(59, 130, 246, 0.5);
+    }
+    .endpoint-item-name {
+      font-weight: 600;
+      font-size: 0.95rem;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .endpoint-item-slug {
+      font-size: 0.75rem;
+      font-family: monospace;
+      color: var(--text-muted);
+    }
+    .sidebar-footer {
+      padding: 12px;
+      border-top: 1px solid var(--border-subtle);
+    }
+
+    /* Main Area */
+    main {
+      flex: 1;
+      overflow-y: auto;
+      padding: 24px;
+      display: flex;
+      flex-direction: column;
+      gap: 24px;
+    }
+
+    /* Buttons */
+    .btn {
+      padding: 8px 14px;
+      font-size: 0.875rem;
+      font-weight: 500;
+      border-radius: var(--radius);
+      border: 1px solid transparent;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      transition: all 0.15s ease;
+      background: var(--bg-surface-elevated);
+      color: var(--text-main);
+    }
+    .btn:hover {
+      background: #475569;
+    }
+    .btn-primary {
+      background: var(--primary);
+      color: white;
+    }
+    .btn-primary:hover {
+      background: var(--primary-hover);
+    }
+    .btn-danger {
+      background: rgba(239, 68, 68, 0.2);
+      color: #fca5a5;
+      border-color: rgba(239, 68, 68, 0.4);
+    }
+    .btn-danger:hover {
+      background: rgba(239, 68, 68, 0.4);
+    }
+    .btn-sm {
+      padding: 4px 8px;
+      font-size: 0.75rem;
+    }
+
+    /* Tabs */
+    .tabs {
+      display: flex;
+      gap: 4px;
+      border-bottom: 1px solid var(--border-subtle);
+      margin-bottom: 20px;
+    }
+    .tab {
+      padding: 10px 16px;
+      font-size: 0.9rem;
+      font-weight: 500;
+      color: var(--text-muted);
+      cursor: pointer;
+      border-bottom: 2px solid transparent;
+      transition: all 0.15s ease;
+    }
+    .tab:hover {
+      color: var(--text-main);
+    }
+    .tab.active {
+      color: var(--primary);
+      border-bottom-color: var(--primary);
+    }
+
+    /* Card Panels */
+    .card {
+      background: var(--bg-surface);
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius);
+      padding: 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+    .card-title {
+      font-size: 1.1rem;
+      font-weight: 600;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .card-subtitle {
+      font-size: 0.85rem;
+      color: var(--text-muted);
+    }
+
+    /* Forms & Inputs */
+    .form-group {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+    .form-row {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 16px;
+    }
+    label {
+      font-size: 0.825rem;
+      font-weight: 600;
+      color: var(--text-muted);
+    }
+    input, select, textarea {
+      background: var(--bg-base);
+      border: 1px solid var(--border-subtle);
+      color: var(--text-main);
+      padding: 8px 12px;
+      border-radius: var(--radius);
+      font-size: 0.9rem;
+      font-family: inherit;
+    }
+    input:focus, select:focus, textarea:focus {
+      outline: none;
+      border-color: var(--border-focus);
+    }
+    textarea {
+      resize: vertical;
+      min-height: 120px;
+      font-family: monospace;
+      font-size: 0.85rem;
+    }
+
+    /* Tables */
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.875rem;
+    }
+    th, td {
+      padding: 10px 12px;
+      text-align: left;
+      border-bottom: 1px solid var(--border-subtle);
+    }
+    th {
+      color: var(--text-muted);
+      font-weight: 600;
+      font-size: 0.8rem;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+    tbody tr:hover {
+      background: rgba(255, 255, 255, 0.02);
+    }
+
+    /* Toast Notification */
+    #toast {
+      position: fixed;
+      bottom: 24px;
+      right: 24px;
+      background: var(--bg-surface-elevated);
+      color: var(--text-main);
+      padding: 12px 20px;
+      border-radius: var(--radius);
+      border: 1px solid var(--border-subtle);
+      box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.5);
+      display: none;
+      align-items: center;
+      gap: 8px;
+      z-index: 9999;
+    }
+
+    /* Code & Viewer */
+    pre {
+      background: var(--bg-base);
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius);
+      padding: 12px;
+      overflow-x: auto;
+      font-family: monospace;
+      font-size: 0.825rem;
+      color: #38bdf8;
+      max-height: 400px;
+    }
+
+    .badge {
+      display: inline-block;
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-size: 0.7rem;
+      font-weight: 600;
+      background: var(--bg-surface-elevated);
+      color: var(--text-muted);
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="brand">
+      <span>OsomAPI</span>
+      <span class="brand-badge">Server & UI</span>
+    </div>
+    <div class="header-actions">
+      <div class="status-pill" id="server-status">
+        <span class="status-dot"></span>
+        <span id="status-text">Connecting...</span>
+      </div>
+      <button class="btn btn-primary" id="btn-save-all">
+        💾 Save Configuration
+      </button>
+    </div>
+  </header>
+
+  <div class="app-body">
+    <!-- Sidebar -->
+    <aside>
+      <div class="sidebar-header">
+        <span class="sidebar-title">Endpoints</span>
+        <button class="btn btn-sm btn-primary" id="btn-add-endpoint">+ New</button>
+      </div>
+      <div class="endpoint-list" id="endpoint-list">
+        <!-- Rendered dynamically -->
+      </div>
+      <div class="sidebar-footer">
+        <button class="btn btn-sm" id="btn-global-settings" style="width: 100%;">
+          ⚙️ Global Server & LLM
+        </button>
+      </div>
+    </aside>
+
+    <!-- Main Content Area -->
+    <main id="main-content">
+      <!-- Dynamic View injected here -->
+    </main>
+  </div>
+
+  <div id="toast"></div>
+
+  <script>
+    // State
+    let config = null;
+    let activeEndpointId = null;
+    let activeTab = 'schema'; // 'schema', 'mapper', 'destination', 'test'
+    let isGlobalSettings = false;
+
+    // Toast helper
+    function showToast(msg, isError = false) {
+      const toast = document.getElementById('toast');
+      toast.textContent = msg;
+      toast.style.borderColor = isError ? 'var(--danger)' : 'var(--success)';
+      toast.style.display = 'flex';
+      setTimeout(() => { toast.style.display = 'none'; }, 3500);
+    }
+
+    // Fetch config & status
+    async function init() {
+      try {
+        const statusRes = await fetch('/api/status');
+        if (statusRes.ok) {
+          const status = await statusRes.json();
+          document.getElementById('status-text').textContent = `${status.server.host}:${status.server.port} • LLM: ${status.llm_provider}`;
+        }
+
+        const configRes = await fetch('/api/config');
+        if (configRes.ok) {
+          config = await configRes.json();
+          // Ensure endpoints list has default if empty
+          if (!config.endpoints || config.endpoints.length === 0) {
+            config.endpoints = [{
+              id: 'default',
+              name: config.output.schema.name || 'Default Pipeline',
+              description: 'Standard processing pipeline',
+              llm: null,
+              output: JSON.parse(JSON.stringify(config.output)),
+              field_mappings: []
+            }];
+          }
+          activeEndpointId = config.endpoints[0].id;
+          renderSidebar();
+          renderMain();
+        }
+      } catch (err) {
+        document.getElementById('status-text').textContent = 'Server Offline';
+        showToast('Failed to connect to OsomAPI server: ' + err.message, true);
+      }
+    }
+
+    // Render Sidebar
+    function renderSidebar() {
+      const list = document.getElementById('endpoint-list');
+      list.innerHTML = '';
+
+      config.endpoints.forEach(ep => {
+        const item = document.createElement('div');
+        item.className = 'endpoint-item' + (!isGlobalSettings && activeEndpointId === ep.id ? ' active' : '');
+        item.onclick = () => {
+          isGlobalSettings = false;
+          activeEndpointId = ep.id;
+          renderSidebar();
+          renderMain();
+        };
+
+        const destType = (ep.output && ep.output.destination && ep.output.destination.type) || 'json';
+        item.innerHTML = `
+          <div class="endpoint-item-name">
+            <span>${ep.name || ep.id}</span>
+            <span class="badge">${destType.toUpperCase()}</span>
+          </div>
+          <div class="endpoint-item-slug">/api/v1/process/${ep.id}</div>
+        `;
+        list.appendChild(item);
+      });
+    }
+
+    // Render Main Area
+    function renderMain() {
+      const main = document.getElementById('main-content');
+      if (isGlobalSettings) {
+        renderGlobalSettings(main);
+        return;
+      }
+
+      const ep = config.endpoints.find(e => e.id === activeEndpointId);
+      if (!ep) {
+        main.innerHTML = '<p>No endpoint selected.</p>';
+        return;
+      }
+
+      main.innerHTML = `
+        <div style="display: flex; justify-content: space-between; align-items: flex-start;">
+          <div>
+            <h1 style="font-size: 1.5rem; font-weight: 700; margin-bottom: 4px;">${ep.name || ep.id}</h1>
+            <p style="color: var(--text-muted); font-size: 0.85rem;">Slug: <code>/api/v1/process/${ep.id}</code> — ${ep.description || 'No description'}</p>
+          </div>
+          <button class="btn btn-danger btn-sm" onclick="deleteEndpoint('${ep.id}')">Delete Endpoint</button>
+        </div>
+
+        <div class="tabs">
+          <div class="tab ${activeTab === 'schema' ? 'active' : ''}" onclick="switchTab('schema')">📋 Output Schema</div>
+          <div class="tab ${activeTab === 'mapper' ? 'active' : ''}" onclick="switchTab('mapper')">🔀 Input Mapper & Preview</div>
+          <div class="tab ${activeTab === 'destination' ? 'active' : ''}" onclick="switchTab('destination')">💾 Storage Destination</div>
+          <div class="tab ${activeTab === 'settings' ? 'active' : ''}" onclick="switchTab('settings')">⚙️ Endpoint Settings</div>
+          <div class="tab ${activeTab === 'test' ? 'active' : ''}" onclick="switchTab('test')">🚀 Test & Playground</div>
+        </div>
+
+        <div id="tab-content"></div>
+      `;
+
+      const tabContent = document.getElementById('tab-content');
+      if (activeTab === 'schema') renderSchemaTab(tabContent, ep);
+      else if (activeTab === 'mapper') renderMapperTab(tabContent, ep);
+      else if (activeTab === 'destination') renderDestinationTab(tabContent, ep);
+      else if (activeTab === 'settings') renderEndpointSettingsTab(tabContent, ep);
+      else if (activeTab === 'test') renderTestTab(tabContent, ep);
+    }
+
+    function switchTab(tab) {
+      activeTab = tab;
+      renderMain();
+    }
+
+    // 1. Schema Tab
+    function renderSchemaTab(container, ep) {
+      const schema = ep.output.schema;
+      container.innerHTML = `
+        <div class="card">
+          <div class="card-title">
+            <span>Entity & Normalization</span>
+          </div>
+          <div class="form-row">
+            <div class="form-group">
+              <label>Schema Name</label>
+              <input type="text" value="${schema.name || ''}" onchange="epUpdate('output.schema.name', this.value)">
+            </div>
+            <div class="form-group">
+              <label>Case Normalization</label>
+              <select onchange="epUpdate('output.schema.case_normalization', this.value === 'none' ? null : this.value)">
+                <option value="none" ${!schema.case_normalization ? 'selected' : ''}>None</option>
+                <option value="lower" ${schema.case_normalization === 'lower' ? 'selected' : ''}>lower case</option>
+                <option value="upper" ${schema.case_normalization === 'upper' ? 'selected' : ''}>UPPER CASE</option>
+                <option value="title" ${schema.case_normalization === 'title' ? 'selected' : ''}>Title Case</option>
+                <option value="snake" ${schema.case_normalization === 'snake' ? 'selected' : ''}>snake_case</option>
+                <option value="camel" ${schema.case_normalization === 'camel' ? 'selected' : ''}>camelCase</option>
+                <option value="pascal" ${schema.case_normalization === 'pascal' ? 'selected' : ''}>PascalCase</option>
+              </select>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-title">
+            <span>Fields (${schema.fields.length})</span>
+            <button class="btn btn-primary btn-sm" onclick="addSchemaField()">+ Add Field</button>
+          </div>
+          <table>
+            <thead>
+              <tr>
+                <th>Field Name</th>
+                <th>Type</th>
+                <th>Required</th>
+                <th>Description</th>
+                <th>Default</th>
+                <th>Action</th>
+              </tr>
+            </thead>
+            <tbody id="schema-fields-body">
+              ${schema.fields.map((f, idx) => `
+                <tr>
+                  <td><input type="text" value="${f.name}" onchange="updateField(${idx}, 'name', this.value)" style="width: 140px;"></td>
+                  <td>
+                    <select onchange="updateFieldType(${idx}, this.value)">
+                      <option value="string" ${f.field_type === 'String' || f.field_type.type === 'string' ? 'selected' : ''}>String</option>
+                      <option value="integer" ${f.field_type === 'Integer' || f.field_type.type === 'integer' ? 'selected' : ''}>Integer</option>
+                      <option value="decimal" ${typeof f.field_type === 'object' && (f.field_type.Decimal || f.field_type.type === 'decimal') ? 'selected' : ''}>Decimal</option>
+                      <option value="date" ${typeof f.field_type === 'object' && (f.field_type.Date || f.field_type.type === 'date') ? 'selected' : ''}>Date</option>
+                      <option value="datetime" ${typeof f.field_type === 'object' && (f.field_type.DateTime || f.field_type.type === 'datetime') ? 'selected' : ''}>DateTime</option>
+                      <option value="boolean" ${f.field_type === 'Boolean' || f.field_type.type === 'boolean' ? 'selected' : ''}>Boolean</option>
+                    </select>
+                  </td>
+                  <td><input type="checkbox" ${f.required ? 'checked' : ''} onchange="updateField(${idx}, 'required', this.checked)"></td>
+                  <td><input type="text" value="${f.description || ''}" onchange="updateField(${idx}, 'description', this.value)" style="width: 180px;"></td>
+                  <td><input type="text" value="${f.default ? JSON.stringify(f.default) : ''}" placeholder="optional" onchange="updateFieldDefault(${idx}, this.value)" style="width: 100px;"></td>
+                  <td><button class="btn btn-danger btn-sm" onclick="removeField(${idx})">×</button></td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        </div>
+      `;
+    }
+
+    function addSchemaField() {
+      const ep = config.endpoints.find(e => e.id === activeEndpointId);
+      ep.output.schema.fields.push({
+        name: 'new_field_' + (ep.output.schema.fields.length + 1),
+        type: 'string',
+        required: true,
+        description: '',
+        default: null
+      });
+      renderMain();
+    }
+
+    function removeField(idx) {
+      const ep = config.endpoints.find(e => e.id === activeEndpointId);
+      ep.output.schema.fields.splice(idx, 1);
+      renderMain();
+    }
+
+    function updateField(idx, prop, val) {
+      const ep = config.endpoints.find(e => e.id === activeEndpointId);
+      ep.output.schema.fields[idx][prop] = val;
+    }
+
+    function updateFieldType(idx, val) {
+      const ep = config.endpoints.find(e => e.id === activeEndpointId);
+      if (val === 'decimal') {
+        ep.output.schema.fields[idx].field_type = { Decimal: { precision: 10, scale: 2 } };
+      } else if (val === 'date') {
+        ep.output.schema.fields[idx].field_type = { Date: { format: '%Y-%m-%d' } };
+      } else if (val === 'datetime') {
+        ep.output.schema.fields[idx].field_type = { DateTime: { format: '%Y-%m-%dT%H:%M:%S' } };
+      } else if (val === 'integer') {
+        ep.output.schema.fields[idx].field_type = 'Integer';
+      } else if (val === 'boolean') {
+        ep.output.schema.fields[idx].field_type = 'Boolean';
+      } else {
+        ep.output.schema.fields[idx].field_type = 'String';
+      }
+    }
+
+    function updateFieldDefault(idx, val) {
+      const ep = config.endpoints.find(e => e.id === activeEndpointId);
+      if (!val || val.trim() === '') {
+        ep.output.schema.fields[idx].default = null;
+      } else {
+        try { ep.output.schema.fields[idx].default = JSON.parse(val); } catch(_) { ep.output.schema.fields[idx].default = val; }
+      }
+    }
+
+    // 2. Mapper Tab
+    function renderMapperTab(container, ep) {
+      container.innerHTML = `
+        <div class="card">
+          <div class="card-title">Load Sample Input Data</div>
+          <p class="card-subtitle">Paste or upload a representative file (CSV, JSON, XML) to automatically extract fields and map them to the output schema.</p>
+          <textarea id="sample-input-text" placeholder="Paste sample CSV, JSON, or XML here..."></textarea>
+          <div style="display: flex; gap: 12px; align-items: center;">
+            <button class="btn btn-primary" onclick="extractSampleFields()">⚡ Inspect & Extract Fields</button>
+            <input type="file" id="sample-file-input" onchange="loadSampleFile(this)">
+          </div>
+        </div>
+
+        <div class="card" id="mapper-results-card">
+          <div class="card-title">Field Mappings & Ignore Rules</div>
+          <p class="card-subtitle">Connect input columns to output schema fields. Ignored fields will be explicitly instructed to be excluded.</p>
+          <table>
+            <thead>
+              <tr>
+                <th>Input Field</th>
+                <th>Sample Value</th>
+                <th>Mapped Output Field</th>
+                <th>Action</th>
+              </tr>
+            </thead>
+            <tbody id="mappings-body">
+              ${(ep.field_mappings || []).map((m, idx) => `
+                <tr>
+                  <td><code>${m.input_field}</code></td>
+                  <td><span style="color: var(--text-muted);">${m.sample_value || '-'}</span></td>
+                  <td>
+                    <select onchange="updateMappingTarget(${idx}, this.value)" ${m.ignore ? 'disabled' : ''}>
+                      <option value="">-- None --</option>
+                      ${ep.output.schema.fields.map(f => `<option value="${f.name}" ${m.output_field === f.name ? 'selected' : ''}>${f.name}</option>`).join('')}
+                    </select>
+                  </td>
+                  <td>
+                    <label style="display: inline-flex; align-items: center; gap: 6px; cursor: pointer;">
+                      <input type="checkbox" ${m.ignore ? 'checked' : ''} onchange="toggleMappingIgnore(${idx}, this.checked)">
+                      <span>Ignore</span>
+                    </label>
+                  </td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        </div>
+      `;
+    }
+
+    async function extractSampleFields() {
+      const text = document.getElementById('sample-input-text').value;
+      if (!text || text.trim() === '') {
+        showToast('Please provide sample text or a file', true);
+        return;
+      }
+      try {
+        const res = await fetch('/api/preview', {
+          method: 'POST',
+          headers: { 'Content-Type': 'text/plain' },
+          body: text
+        });
+        if (!res.ok) throw new Error(await res.text());
+        const fields = await res.json();
+        
+        const ep = config.endpoints.find(e => e.id === activeEndpointId);
+        ep.field_mappings = fields.map(f => {
+          // Attempt fuzzy match with existing schema field
+          const match = ep.output.schema.fields.find(sf => 
+            sf.name.toLowerCase() === f.name.toLowerCase() ||
+            sf.name.replace(/_/g, '') === f.name.toLowerCase().replace(/_/g, '')
+          );
+          return {
+            input_field: f.name,
+            output_field: match ? match.name : null,
+            ignore: false,
+            sample_value: f.sample_value
+          };
+        });
+        showToast(`Detected ${fields.length} input fields!`);
+        renderMain();
+      } catch (err) {
+        showToast('Extraction failed: ' + err.message, true);
+      }
+    }
+
+    function loadSampleFile(input) {
+      if (!input.files || input.files.length === 0) return;
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        document.getElementById('sample-input-text').value = e.target.result;
+        extractSampleFields();
+      };
+      reader.readAsText(input.files[0]);
+    }
+
+    function updateMappingTarget(idx, target) {
+      const ep = config.endpoints.find(e => e.id === activeEndpointId);
+      ep.field_mappings[idx].output_field = target || null;
+    }
+
+    function toggleMappingIgnore(idx, ignore) {
+      const ep = config.endpoints.find(e => e.id === activeEndpointId);
+      ep.field_mappings[idx].ignore = ignore;
+      renderMain();
+    }
+
+    // 3. Destination Tab
+    function renderDestinationTab(container, ep) {
+      const dest = ep.output.destination;
+      const destType = dest.type || (dest.Json ? 'json' : dest.Xml ? 'xml' : 'database');
+
+      container.innerHTML = `
+        <div class="card">
+          <div class="card-title">Output Storage Destination</div>
+          <div class="form-group">
+            <label>Destination Driver</label>
+            <select onchange="updateDestinationType(this.value)">
+              <option value="json" ${destType === 'json' ? 'selected' : ''}>JSON File</option>
+              <option value="xml" ${destType === 'xml' ? 'selected' : ''}>XML File</option>
+              <option value="sqlite" ${destType === 'database' && (!dest.driver || dest.driver === 'sqlite') ? 'selected' : ''}>SQLite Database</option>
+              <option value="postgres" ${destType === 'database' && dest.driver === 'postgres' ? 'selected' : ''}>PostgreSQL Database</option>
+              <option value="mysql" ${destType === 'database' && dest.driver === 'mysql' ? 'selected' : ''}>MySQL Database</option>
+            </select>
+          </div>
+
+          <div id="dest-config-fields">
+            ${destType === 'json' || destType === 'xml' ? `
+              <div class="form-row">
+                <div class="form-group">
+                  <label>File Path</label>
+                  <input type="text" value="${dest.path || 'results.' + destType}" onchange="ep.output.destination.path = this.value">
+                </div>
+                <div class="form-group" style="justify-content: flex-end;">
+                  <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
+                    <input type="checkbox" ${dest.pretty !== false ? 'checked' : ''} onchange="ep.output.destination.pretty = this.checked">
+                    <span>Format with indentation (Pretty Print)</span>
+                  </label>
+                </div>
+              </div>
+            ` : dest.driver === 'postgres' || dest.driver === 'mysql' ? `
+              <div class="form-row">
+                <div class="form-group">
+                  <label>Host</label>
+                  <input type="text" value="${dest.host || 'localhost'}" onchange="ep.output.destination.host = this.value">
+                </div>
+                <div class="form-group">
+                  <label>Port</label>
+                  <input type="number" value="${dest.port || (dest.driver === 'postgres' ? 5432 : 3306)}" onchange="ep.output.destination.port = parseInt(this.value)">
+                </div>
+                <div class="form-group">
+                  <label>Database</label>
+                  <input type="text" value="${dest.database || 'osom_db'}" onchange="ep.output.destination.database = this.value">
+                </div>
+              </div>
+              <div class="form-row">
+                <div class="form-group">
+                  <label>Username</label>
+                  <input type="text" value="${dest.username || 'postgres'}" onchange="ep.output.destination.username = this.value">
+                </div>
+                <div class="form-group">
+                  <label>Password</label>
+                  <input type="password" value="${dest.password || ''}" onchange="ep.output.destination.password = this.value">
+                </div>
+                <div class="form-group">
+                  <label>Table Name</label>
+                  <input type="text" value="${dest.table_name || 'records'}" onchange="ep.output.destination.table_name = this.value">
+                </div>
+              </div>
+            ` : `
+              <div class="form-row">
+                <div class="form-group">
+                  <label>SQLite Database File Path</label>
+                  <input type="text" value="${dest.path || 'records.db'}" onchange="ep.output.destination.path = this.value">
+                </div>
+                <div class="form-group">
+                  <label>Table Name</label>
+                  <input type="text" value="${dest.table_name || 'records'}" onchange="ep.output.destination.table_name = this.value">
+                </div>
+              </div>
+            `}
+          </div>
+        </div>
+      `;
+    }
+
+    function updateDestinationType(val) {
+      const ep = config.endpoints.find(e => e.id === activeEndpointId);
+      if (val === 'json') {
+        ep.output.destination = { type: 'json', path: `${ep.id}.json`, pretty: true };
+      } else if (val === 'xml') {
+        ep.output.destination = { type: 'xml', path: `${ep.id}.xml`, pretty: true };
+      } else if (val === 'sqlite') {
+        ep.output.destination = { type: 'database', driver: 'sqlite', path: `${ep.id}.db`, table_name: ep.id };
+      } else if (val === 'postgres') {
+        ep.output.destination = { type: 'database', driver: 'postgres', host: 'localhost', port: 5432, database: 'osom_db', username: 'postgres', password: '', table_name: ep.id };
+      } else if (val === 'mysql') {
+        ep.output.destination = { type: 'database', driver: 'mysql', host: 'localhost', port: 3306, database: 'osom_db', username: 'root', password: '', table_name: ep.id };
+      }
+      renderMain();
+    }
+
+    // 4. Endpoint Settings Tab
+    function renderEndpointSettingsTab(container, ep) {
+      container.innerHTML = `
+        <div class="card">
+          <div class="card-title">Endpoint Information</div>
+          <div class="form-row">
+            <div class="form-group">
+              <label>Endpoint Slug / ID</label>
+              <input type="text" value="${ep.id}" onchange="ep.id = this.value; renderSidebar();">
+            </div>
+            <div class="form-group">
+              <label>Display Name</label>
+              <input type="text" value="${ep.name || ''}" onchange="ep.name = this.value; renderSidebar();">
+            </div>
+          </div>
+          <div class="form-group">
+            <label>Description</label>
+            <input type="text" value="${ep.description || ''}" onchange="ep.description = this.value;">
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-title">Custom LLM Override</div>
+          <p class="card-subtitle">Optionally override the global model provider specifically for this endpoint.</p>
+          <div class="form-group">
+            <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
+              <input type="checkbox" ${ep.llm ? 'checked' : ''} onchange="toggleCustomLlm(this.checked)">
+              <span>Use custom LLM provider for this endpoint</span>
+            </label>
+          </div>
+          ${ep.llm ? `
+            <div class="form-row">
+              <div class="form-group">
+                <label>Provider</label>
+                <select onchange="ep.llm.provider = this.value; renderMain();">
+                  <option value="ollama" ${ep.llm.provider === 'ollama' ? 'selected' : ''}>Ollama</option>
+                  <option value="openai" ${ep.llm.provider === 'openai' ? 'selected' : ''}>OpenAI</option>
+                  <option value="gemini" ${ep.llm.provider === 'gemini' ? 'selected' : ''}>Gemini</option>
+                  <option value="anthropic" ${ep.llm.provider === 'anthropic' ? 'selected' : ''}>Anthropic Claude</option>
+                  <option value="copilot" ${ep.llm.provider === 'copilot' ? 'selected' : ''}>GitHub Copilot</option>
+                </select>
+              </div>
+              <div class="form-group">
+                <label>Model</label>
+                <input type="text" value="${ep.llm.model || ''}" onchange="ep.llm.model = this.value;">
+              </div>
+            </div>
+          ` : ''}
+        </div>
+      `;
+    }
+
+    function toggleCustomLlm(enable) {
+      const ep = config.endpoints.find(e => e.id === activeEndpointId);
+      if (enable) {
+        ep.llm = JSON.parse(JSON.stringify(config.llm));
+      } else {
+        ep.llm = null;
+      }
+      renderMain();
+    }
+
+    // 5. Test Tab
+    function renderTestTab(container, ep) {
+      container.innerHTML = `
+        <div class="card">
+          <div class="card-title">Test Pipeline</div>
+          <p class="card-subtitle">Paste data below to test extraction against this endpoint's schema.</p>
+          <textarea id="test-payload-text" placeholder="Paste test data (CSV, JSON, XML)..."></textarea>
+          <div style="display: flex; gap: 12px;">
+            <button class="btn btn-primary" onclick="runTest(false)">🚀 Process Live</button>
+            <button class="btn" onclick="runTest(true)">🔍 Dry Run (Inspect Prompt)</button>
+          </div>
+        </div>
+
+        <div class="card" id="test-result-card" style="display: none;">
+          <div class="card-title" id="test-result-title">Result</div>
+          <pre id="test-result-pre"></pre>
+        </div>
+      `;
+    }
+
+    async function runTest(isDryRun) {
+      const text = document.getElementById('test-payload-text').value;
+      if (!text || text.trim() === '') {
+        showToast('Please enter payload to test', true);
+        return;
+      }
+
+      const ep = config.endpoints.find(e => e.id === activeEndpointId);
+      const url = isDryRun ? `/api/dry-run/${ep.id}` : `/api/process/${ep.id}`;
+
+      try {
+        showToast(isDryRun ? 'Generating prompt...' : 'Processing through LLM...');
+        const res = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'text/plain' },
+          body: text
+        });
+
+        const data = await res.json();
+        const resultCard = document.getElementById('test-result-card');
+        const resultTitle = document.getElementById('test-result-title');
+        const resultPre = document.getElementById('test-result-pre');
+
+        resultCard.style.display = 'flex';
+        if (isDryRun) {
+          resultTitle.textContent = 'Generated LLM Prompt';
+          resultPre.textContent = data.prompt;
+        } else {
+          resultTitle.textContent = `Extracted Records (${data.records_count || 0})`;
+          resultPre.textContent = JSON.stringify(data.records, null, 2);
+        }
+        showToast('Execution successful!');
+      } catch (err) {
+        showToast('Execution failed: ' + err.message, true);
+      }
+    }
+
+    // Global Settings View
+    function renderGlobalSettings(container) {
+      container.innerHTML = `
+        <h1 style="font-size: 1.5rem; font-weight: 700; margin-bottom: 16px;">Global Server & LLM Settings</h1>
+
+        <div class="card">
+          <div class="card-title">HTTP Server</div>
+          <div class="form-row">
+            <div class="form-group">
+              <label>Listen Host</label>
+              <input type="text" value="${config.server.host}" onchange="config.server.host = this.value;">
+            </div>
+            <div class="form-group">
+              <label>Listen Port</label>
+              <input type="number" value="${config.server.port}" onchange="config.server.port = parseInt(this.value);">
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-title">Default LLM Provider</div>
+          <div class="form-row">
+            <div class="form-group">
+              <label>Provider</label>
+              <select onchange="updateGlobalProvider(this.value)">
+                <option value="ollama" ${config.llm.provider === 'ollama' ? 'selected' : ''}>Ollama</option>
+                <option value="openai" ${config.llm.provider === 'openai' ? 'selected' : ''}>OpenAI</option>
+                <option value="gemini" ${config.llm.provider === 'gemini' ? 'selected' : ''}>Gemini</option>
+                <option value="anthropic" ${config.llm.provider === 'anthropic' ? 'selected' : ''}>Anthropic Claude</option>
+                <option value="copilot" ${config.llm.provider === 'copilot' ? 'selected' : ''}>GitHub Copilot</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label>Model</label>
+              <input type="text" value="${config.llm.model || ''}" onchange="config.llm.model = this.value;">
+            </div>
+            ${config.llm.api_key !== undefined ? `
+              <div class="form-group">
+                <label>API Key</label>
+                <input type="password" value="${config.llm.api_key || ''}" onchange="config.llm.api_key = this.value;">
+              </div>
+            ` : `
+              <div class="form-group">
+                <label>Ollama URL</label>
+                <input type="text" value="${config.llm.url || 'http://localhost:11434'}" onchange="config.llm.url = this.value;">
+              </div>
+            `}
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-title">Application Tuning</div>
+          <div class="form-row">
+            <div class="form-group">
+              <label>Request Timeout (seconds)</label>
+              <input type="number" value="${config.settings.request_timeout_secs}" onchange="config.settings.request_timeout_secs = parseInt(this.value);">
+            </div>
+            <div class="form-group">
+              <label>Max Retries</label>
+              <input type="number" value="${config.settings.max_retries}" onchange="config.settings.max_retries = parseInt(this.value);">
+            </div>
+            <div class="form-group">
+              <label>Log Level</label>
+              <select onchange="config.settings.log_level = this.value;">
+                <option value="trace" ${config.settings.log_level === 'trace' ? 'selected' : ''}>Trace</option>
+                <option value="debug" ${config.settings.log_level === 'debug' ? 'selected' : ''}>Debug</option>
+                <option value="info" ${config.settings.log_level === 'info' ? 'selected' : ''}>Info</option>
+                <option value="warn" ${config.settings.log_level === 'warn' ? 'selected' : ''}>Warn</option>
+                <option value="error" ${config.settings.log_level === 'error' ? 'selected' : ''}>Error</option>
+              </select>
+            </div>
+          </div>
+        </div>
+      `;
+    }
+
+    function updateGlobalProvider(val) {
+      if (val === 'ollama') {
+        config.llm = { provider: 'ollama', model: 'llama3', url: 'http://localhost:11434' };
+      } else if (val === 'openai') {
+        config.llm = { provider: 'openai', model: 'gpt-4o-mini', api_key: '' };
+      } else if (val === 'gemini') {
+        config.llm = { provider: 'gemini', model: 'gemini-1.5-flash', api_key: '' };
+      } else if (val === 'anthropic') {
+        config.llm = { provider: 'anthropic', model: 'claude-3-5-sonnet-20241022', api_key: '' };
+      } else if (val === 'copilot') {
+        config.llm = { provider: 'copilot', model: 'gpt-4o', api_key: '' };
+      }
+      renderGlobalSettings(document.getElementById('main-content'));
+    }
+
+    function epUpdate(path, val) {
+      const ep = config.endpoints.find(e => e.id === activeEndpointId);
+      const parts = path.split('.');
+      let obj = ep;
+      for (let i = 0; i < parts.length - 1; i++) {
+        obj = obj[parts[i]];
+      }
+      obj[parts[parts.length - 1]] = val;
+    }
+
+    // Add endpoint button
+    document.getElementById('btn-add-endpoint').onclick = () => {
+      const id = prompt('Enter a unique slug for the new endpoint (e.g. logistics):');
+      if (!id || id.trim() === '') return;
+      const cleanId = id.trim().toLowerCase().replace(/[^a-z0-9_-]/g, '');
+
+      if (config.endpoints.some(e => e.id === cleanId)) {
+        showToast('An endpoint with this ID already exists', true);
+        return;
+      }
+
+      config.endpoints.push({
+        id: cleanId,
+        name: id.trim(),
+        description: '',
+        llm: null,
+        output: {
+          schema: {
+            name: cleanId,
+            fields: [
+              { name: 'id', type: 'integer', required: true, description: 'Record ID', default: null },
+              { name: 'name', type: 'string', required: true, description: 'Title or name', default: null }
+            ],
+            case_normalization: null
+          },
+          destination: { type: 'json', path: `${cleanId}.json`, pretty: true }
+        },
+        field_mappings: []
+      });
+
+      activeEndpointId = cleanId;
+      isGlobalSettings = false;
+      renderSidebar();
+      renderMain();
+      showToast(`Created endpoint '${cleanId}'`);
+    };
+
+    function deleteEndpoint(id) {
+      if (config.endpoints.length <= 1) {
+        showToast('Cannot delete the only remaining endpoint', true);
+        return;
+      }
+      if (!confirm(`Are you sure you want to delete endpoint '${id}'?`)) return;
+
+      config.endpoints = config.endpoints.filter(e => e.id !== id);
+      activeEndpointId = config.endpoints[0].id;
+      renderSidebar();
+      renderMain();
+      showToast(`Deleted endpoint '${id}'`);
+    }
+
+    // Save All Changes button
+    document.getElementById('btn-save-all').onclick = async () => {
+      try {
+        const res = await fetch('/api/config', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(config)
+        });
+        if (!res.ok) throw new Error(await res.text());
+        showToast('✅ Configuration saved successfully to disk!');
+      } catch (err) {
+        showToast('Failed to save config: ' + err.message, true);
+      }
+    };
+
+    // Global settings button
+    document.getElementById('btn-global-settings').onclick = () => {
+      isGlobalSettings = true;
+      renderSidebar();
+      renderMain();
+    };
+
+    // Initialize on load
+    init();
+  </script>
+</body>
+</html>

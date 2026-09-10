@@ -18,20 +18,64 @@ cargo build --release
 
 Plik wykonywalny znajdzie się w `./target/release/osom-api`.
 
-## Podstawowe użycie
+## Tryby działania
+
+Aplikacja OsomAPI może działać w dwóch trybach:
+1. **Tryb serwera HTTP z panelem Web UI** (`--serve` lub brak parametru `--input`)
+2. **Tryb CLI** (przetwarzanie pojedynczego pliku lub wsadowego katalogu)
+
+## Tryb serwera HTTP i panel Web UI
+
+Uruchomienie serwera:
+```bash
+osom-api --serve
+```
+Opcjonalnie ze wskazaniem portu i adresu:
+```bash
+osom-api --serve --host 127.0.0.1 --port 8080 --config config.toml
+```
+
+Po uruchomieniu przejdź w przeglądarce pod adres `http://localhost:8080`, aby:
+- Przeglądać, dodawać i konfigurować endpointy procesowania danych (np. `/api/v1/process/invoices`).
+- Wczytać przykładowe pliki (CSV, JSON, XML) i automatycznie wyciągnąć listę kolumn/pól.
+- Wizualnie przypisać pola wejściowe do pól schematu wyjściowego lub oznaczyć pola jako ignorowane.
+- Konfigurować schematy wyjściowe (typy, zaokrąglenia decimal, formaty dat).
+- Konfigurować miejsce zapisu (JSON, XML, SQLite, PostgreSQL, MySQL).
+- Testować zapytania w czasie rzeczywistym (dry-run oraz live process).
+
+### Endpointy REST API serwera
+
+| Metoda | Ścieżka | Opis |
+|---|---|---|
+| `GET` | `/` | Wbudowany panel Web UI |
+| `GET` | `/api/status` | Status serwera, wersja i aktywny model LLM |
+| `GET` | `/api/config` | Pobranie bieżącej konfiguracji |
+| `POST` | `/api/config` | Zapisanie zaktualizowanej konfiguracji |
+| `GET` | `/api/endpoints` | Lista skonfigurowanych endpointów |
+| `POST` | `/api/endpoints` | Dodanie lub edycja endpointu |
+| `DELETE` | `/api/endpoints/:id` | Usunięcie endpointu |
+| `POST` | `/api/preview` | Wczytanie pliku/tekstu i detekcja pól wejściowych |
+| `POST` | `/api/process/:endpoint_id` | Przetworzenie danych przez dany endpoint i zapis |
+| `POST` | `/api/dry-run/:endpoint_id` | Wygenerowanie promptu dla danego endpointu |
+
+## Tryb CLI
 
 ```bash
-osom-api --input <plik_wejsciowy> --config <plik_konfiguracyjny>
+osom-api --input <plik_lub_katalog> --config <plik_konfiguracyjny>
 ```
 
 ### Parametry CLI
 
 | Flaga | Skrót | Wymagana | Opis | Domyślnie |
 |-------|-------|----------|------|-----------|
-| `--input` | `-i` | tak | Ścieżka do pliku wejściowego | – |
+| `--input` | `-i` | nie | Ścieżka do pliku lub katalogu (uruchamia serwer jeśli pominięto) | – |
 | `--config` | `-c` | nie | Ścieżka do pliku konfiguracyjnego | `config.toml` |
+| `--serve` | – | nie | Wymuszenie uruchomienia serwera HTTP i Web UI | `false` |
+| `--host` | – | nie | Adres nasłuchiwania serwera | z configu (`0.0.0.0`) |
+| `--port` | – | nie | Port nasłuchiwania serwera | z configu (`8080`) |
 | `--dry-run` | – | nie | Wyświetlenie promptu bez wysyłania zapytania do LLM | `false` |
 | `--output` | `-o` | nie | Nadpisanie ścieżki pliku wynikowego | z pliku config |
+| `--pattern` | `-p` | nie | Filtr plików przy skanowaniu katalogu (np. `*.csv`) | – |
 
 ### Przykłady uruchomienia
 
