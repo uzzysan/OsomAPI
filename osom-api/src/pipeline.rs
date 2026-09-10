@@ -30,8 +30,27 @@ pub enum PipelineError {
     EmptyInput,
 }
 
-/// Wykonuje pełny potok przetwarzania: parse → LLM → validate → format → write.
+/// Opcje uruchomienia potoku przetwarzania.
+#[derive(Debug, Clone, Default)]
+pub struct PipelineOptions {
+    /// Czy uruchomić w trybie dry-run (wypisanie promptu bez wywołania LLM)
+    pub dry_run: bool,
+    /// Opcjonalne nadpisanie ścieżki pliku docelowego
+    pub output_override: Option<String>,
+}
+
+/// Wykonuje pełny potok przetwarzania z domyślnymi opcjami.
+#[allow(dead_code)]
 pub async fn run_pipeline(config: &Config, input_path: &str) -> Result<(), PipelineError> {
+    run_pipeline_with_options(config, input_path, &PipelineOptions::default()).await
+}
+
+/// Wykonuje pełny potok przetwarzania: parse → LLM → validate → format → write.
+pub async fn run_pipeline_with_options(
+    config: &Config,
+    input_path: &str,
+    options: &PipelineOptions,
+) -> Result<(), PipelineError> {
     info!("Rozpoczynanie potoku przetwarzania dla: {}", input_path);
 
     // 1. Odczyt pliku wejściowego
@@ -69,6 +88,12 @@ pub async fn run_pipeline(config: &Config, input_path: &str) -> Result<(), Pipel
     info!("Budowanie promptu LLM...");
     let prompt = PromptBuilder::build(&parsed.content, &config.output.schema);
 
+    if options.dry_run {
+        info!("--- TRYB DRY-RUN (wygenerowany prompt) ---");
+        println!("{}", prompt);
+        return Ok(());
+    }
+
     // 4. Wywołanie LLM
     info!("Wysyłanie zapytania do modelu LLM...");
     let client = build_llm_client_with_settings(&config.llm, &config.settings)
@@ -99,7 +124,25 @@ pub async fn run_pipeline(config: &Config, input_path: &str) -> Result<(), Pipel
 
     // 8. Zapis wyników
     info!("Zapisywanie wyników...");
-    match &config.output.destination {
+    let destination = match (&options.output_override, &config.output.destination) {
+        (Some(override_path), Destination::Json { pretty, .. }) => Destination::Json {
+            path: override_path.clone(),
+            pretty: *pretty,
+        },
+        (Some(override_path), Destination::Xml { pretty, .. }) => Destination::Xml {
+            path: override_path.clone(),
+            pretty: *pretty,
+        },
+        (Some(override_path), Destination::Database { table_name, .. }) => Destination::Database {
+            connection: osom_config::DbConnection::Sqlite {
+                path: override_path.clone(),
+            },
+            table_name: table_name.clone(),
+        },
+        _ => config.output.destination.clone(),
+    };
+
+    match &destination {
         Destination::Json { path, pretty } => {
             let writer = JsonWriter::new(path.clone(), *pretty);
             writer
@@ -196,5 +239,20 @@ mod tests {
     fn test_extract_json_no_json_block() {
         let text = "To nie jest JSON";
         assert!(extract_json_from_markdown(text).is_err());
+    }
+
+    #[tokio::test]
+    async fn test_pipeline_dry_run_success() {
+        let config_path = concat!(env!("CARGO_MANIFEST_DIR"), "/../config.example.toml");
+        let input_path = concat!(env!("CARGO_MANIFEST_DIR"), "/../sample_input.csv");
+        let config = Config::from_toml_file(config_path).expect("Failed to load config");
+
+        let options = PipelineOptions {
+            dry_run: true,
+            output_override: None,
+        };
+
+        let result = run_pipeline_with_options(&config, input_path, &options).await;
+        assert!(result.is_ok());
     }
 }

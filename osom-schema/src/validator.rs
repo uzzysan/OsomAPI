@@ -82,7 +82,11 @@ fn validate_type(name: &str, value: &Value, field_type: &FieldType) -> Result<()
             }
         }
         FieldType::Decimal { .. } => {
-            if !value.is_number() && !value.is_null() {
+            let is_valid_dec = value.is_number()
+                || (value.is_string()
+                    && value.as_str().is_some_and(|s| s.trim().parse::<f64>().is_ok()))
+                || value.is_null();
+            if !is_valid_dec {
                 return Err(ValidationError::TypeMismatch(
                     name.to_string(),
                     "decimal".to_string(),
@@ -99,11 +103,51 @@ fn validate_type(name: &str, value: &Value, field_type: &FieldType) -> Result<()
                 ));
             }
         }
-        FieldType::Date { .. } | FieldType::DateTime { .. } => {
-            if !value.is_string() && !value.is_null() {
+        FieldType::Date { format } => {
+            if let Value::String(s) = value {
+                let parsed = chrono::NaiveDate::parse_from_str(s, format).is_ok()
+                    || chrono::DateTime::parse_from_rfc3339(s).is_ok()
+                    || ["%Y-%m-%d", "%d-%m-%Y", "%d.%m.%Y", "%Y/%m/%d", "%m/%d/%Y"]
+                        .iter()
+                        .any(|fmt| chrono::NaiveDate::parse_from_str(s, fmt).is_ok());
+                if !parsed {
+                    return Err(ValidationError::TypeMismatch(
+                        name.to_string(),
+                        format!("valid date string (expected format '{}')", format),
+                        format!("{:?}", value),
+                    ));
+                }
+            } else if !value.is_null() {
                 return Err(ValidationError::TypeMismatch(
                     name.to_string(),
-                    "date/datetime string".to_string(),
+                    "date string".to_string(),
+                    format!("{:?}", value),
+                ));
+            }
+        }
+        FieldType::DateTime { format } => {
+            if let Value::String(s) = value {
+                let parsed = chrono::NaiveDateTime::parse_from_str(s, format).is_ok()
+                    || chrono::DateTime::parse_from_rfc3339(s).is_ok()
+                    || [
+                        "%Y-%m-%dT%H:%M:%S",
+                        "%Y-%m-%d %H:%M:%S",
+                        "%Y-%m-%d %H:%M",
+                        "%Y/%m/%d %H:%M:%S",
+                    ]
+                    .iter()
+                    .any(|fmt| chrono::NaiveDateTime::parse_from_str(s, fmt).is_ok());
+                if !parsed {
+                    return Err(ValidationError::TypeMismatch(
+                        name.to_string(),
+                        format!("valid datetime string (expected format '{}')", format),
+                        format!("{:?}", value),
+                    ));
+                }
+            } else if !value.is_null() {
+                return Err(ValidationError::TypeMismatch(
+                    name.to_string(),
+                    "datetime string".to_string(),
                     format!("{:?}", value),
                 ));
             }
@@ -208,5 +252,46 @@ mod tests {
             validate(&value, &schema),
             Err(ValidationError::TypeMismatch(_, _, _))
         ));
+    }
+
+    #[test]
+    fn test_validate_date() {
+        let schema = OutputSchema {
+            name: "Test".to_string(),
+            fields: vec![FieldDef {
+                name: "created_at".to_string(),
+                field_type: FieldType::Date {
+                    format: "%Y-%m-%d".to_string(),
+                },
+                required: true,
+                description: "".to_string(),
+                default: None,
+            }],
+            case_normalization: None,
+        };
+        assert!(validate(&json!({"created_at": "2024-05-20"}), &schema).is_ok());
+        assert!(validate(&json!({"created_at": "20-05-2024"}), &schema).is_ok());
+        assert!(validate(&json!({"created_at": "not-a-date"}), &schema).is_err());
+    }
+
+    #[test]
+    fn test_validate_decimal() {
+        let schema = OutputSchema {
+            name: "Test".to_string(),
+            fields: vec![FieldDef {
+                name: "amount".to_string(),
+                field_type: FieldType::Decimal {
+                    precision: 10,
+                    scale: 2,
+                },
+                required: true,
+                description: "".to_string(),
+                default: None,
+            }],
+            case_normalization: None,
+        };
+        assert!(validate(&json!({"amount": 12.34}), &schema).is_ok());
+        assert!(validate(&json!({"amount": "12.34"}), &schema).is_ok());
+        assert!(validate(&json!({"amount": "invalid"}), &schema).is_err());
     }
 }

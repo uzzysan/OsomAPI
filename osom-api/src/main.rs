@@ -1,8 +1,6 @@
-mod pipeline;
-
 use clap::Parser;
+use osom_api::pipeline::{PipelineOptions, run_pipeline_with_options};
 use osom_config::Config;
-use pipeline::run_pipeline;
 use tracing::info;
 
 #[derive(Parser, Debug)]
@@ -13,6 +11,10 @@ struct Cli {
     input: String,
     #[arg(short, long, default_value = "config.toml", help = "Path to config file")]
     config: String,
+    #[arg(long, help = "Display prompt without calling the LLM")]
+    dry_run: bool,
+    #[arg(short, long, help = "Override output destination file path")]
+    output: Option<String>,
 }
 
 #[tokio::main]
@@ -33,7 +35,12 @@ async fn main() -> anyhow::Result<()> {
     info!("OsomAPI – Universalny Procesor Danych LLM");
     info!("Plik wejściowy: {}, Konfiguracja: {}", cli.input, cli.config);
 
-    run_pipeline(&config, &cli.input)
+    let options = PipelineOptions {
+        dry_run: cli.dry_run,
+        output_override: cli.output,
+    };
+
+    run_pipeline_with_options(&config, &cli.input, &options)
         .await
         .map_err(|e| anyhow::anyhow!("Błąd potoku przetwarzania: {}", e))?;
 

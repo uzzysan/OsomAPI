@@ -143,10 +143,16 @@ impl DatabaseWriter {
                     format!("{} {}", escape_sql_identifier(k), col_type)
                 })
                 .collect();
-            let create_sql = format!(
-                "CREATE TABLE IF NOT EXISTS {} (id INTEGER PRIMARY KEY AUTOINCREMENT, {})",
-                escape_sql_identifier(&self.table_name),
+            let has_id = first.keys().any(|k| k.eq_ignore_ascii_case("id"));
+            let table_cols = if has_id {
                 columns.join(", ")
+            } else {
+                format!("_id INTEGER PRIMARY KEY AUTOINCREMENT, {}", columns.join(", "))
+            };
+            let create_sql = format!(
+                "CREATE TABLE IF NOT EXISTS {} ({})",
+                escape_sql_identifier(&self.table_name),
+                table_cols
             );
             sqlx::query(&create_sql)
                 .execute(&pool)

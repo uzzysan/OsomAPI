@@ -84,8 +84,33 @@ fn format_value(
                 other
             ))),
         },
-        FieldType::Decimal { .. } => match value {
-            Value::Number(_) => Ok(value.clone()),
+        FieldType::Decimal { scale, .. } => match value {
+            Value::Number(n) => {
+                if let Some(f) = n.as_f64() {
+                    let multiplier = 10f64.powi(*scale as i32);
+                    let rounded = (f * multiplier).round() / multiplier;
+                    let rounded_val = serde_json::Number::from_f64(rounded)
+                        .map(Value::Number)
+                        .unwrap_or_else(|| value.clone());
+                    Ok(rounded_val)
+                } else {
+                    Ok(value.clone())
+                }
+            }
+            Value::String(s) => {
+                if let Ok(f) = s.trim().parse::<f64>() {
+                    let multiplier = 10f64.powi(*scale as i32);
+                    let rounded = (f * multiplier).round() / multiplier;
+                    serde_json::Number::from_f64(rounded)
+                        .map(Value::Number)
+                        .ok_or_else(|| FormatError::Type("Niepoprawna liczba dziesiętna".into()))
+                } else {
+                    Err(FormatError::Type(format!(
+                        "Nie można sparsować jako decimal: {}",
+                        s
+                    )))
+                }
+            }
             Value::Null => Ok(Value::Null),
             other => Err(FormatError::Type(format!(
                 "Oczekiwano decimal, otrzymano {}",
@@ -100,11 +125,25 @@ fn format_value(
                 other
             ))),
         },
-        FieldType::Date { .. } | FieldType::DateTime { .. } => match value {
-            Value::String(_) => Ok(value.clone()),
+        FieldType::Date { format } => match value {
+            Value::String(s) => {
+                let formatted_date = parse_and_format_date(s, format)?;
+                Ok(Value::String(formatted_date))
+            }
             Value::Null => Ok(Value::Null),
             other => Err(FormatError::Type(format!(
                 "Oczekiwano string daty, otrzymano {}",
+                other
+            ))),
+        },
+        FieldType::DateTime { format } => match value {
+            Value::String(s) => {
+                let formatted_dt = parse_and_format_datetime(s, format)?;
+                Ok(Value::String(formatted_dt))
+            }
+            Value::Null => Ok(Value::Null),
+            other => Err(FormatError::Type(format!(
+                "Oczekiwano string daty i czasu, otrzymano {}",
                 other
             ))),
         },
@@ -126,6 +165,52 @@ fn format_value(
             ))),
         },
     }
+}
+
+fn parse_and_format_date(s: &str, target_format: &str) -> Result<String, FormatError> {
+    if let Ok(date) = chrono::NaiveDate::parse_from_str(s, target_format) {
+        return Ok(date.format(target_format).to_string());
+    }
+    let formats = ["%Y-%m-%d", "%d-%m-%Y", "%d.%m.%Y", "%Y/%m/%d", "%m/%d/%Y"];
+    for fmt in formats {
+        if let Ok(date) = chrono::NaiveDate::parse_from_str(s, fmt) {
+            return Ok(date.format(target_format).to_string());
+        }
+    }
+    if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(s) {
+        return Ok(dt.date_naive().format(target_format).to_string());
+    }
+    if let Ok(dt) = chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S") {
+        return Ok(dt.date().format(target_format).to_string());
+    }
+    Err(FormatError::Type(format!(
+        "Nie można sparsować daty '{}' do formatu '{}'",
+        s, target_format
+    )))
+}
+
+fn parse_and_format_datetime(s: &str, target_format: &str) -> Result<String, FormatError> {
+    if let Ok(dt) = chrono::NaiveDateTime::parse_from_str(s, target_format) {
+        return Ok(dt.format(target_format).to_string());
+    }
+    if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(s) {
+        return Ok(dt.naive_utc().format(target_format).to_string());
+    }
+    let formats = [
+        "%Y-%m-%dT%H:%M:%S",
+        "%Y-%m-%d %H:%M:%S",
+        "%Y-%m-%d %H:%M",
+        "%Y/%m/%d %H:%M:%S",
+    ];
+    for fmt in formats {
+        if let Ok(dt) = chrono::NaiveDateTime::parse_from_str(s, fmt) {
+            return Ok(dt.format(target_format).to_string());
+        }
+    }
+    Err(FormatError::Type(format!(
+        "Nie można sparsować daty i czasu '{}' do formatu '{}'",
+        s, target_format
+    )))
 }
 
 #[cfg(test)]
@@ -212,5 +297,62 @@ mod tests {
         let raw = json!({"user": {"name": "Alice"}});
         let formatted = format_values(&raw, &schema).unwrap();
         assert_eq!(formatted.records[0]["user"]["name"], "Alice");
+    }
+
+    #[test]
+    fn test_format_decimal_rounding() {
+        let schema = OutputSchema {
+            name: "Test".to_string(),
+            fields: vec![FieldDef {
+                name: "price".to_string(),
+                field_type: FieldType::Decimal {
+                    precision: 10,
+                    scale: 2,
+                },
+                required: true,
+                description: "".to_string(),
+                default: None,
+            }],
+            case_normalization: None,
+        };
+        let raw = json!({"price": 12.34567});
+        let formatted = format_values(&raw, &schema).unwrap();
+        assert_eq!(formatted.records[0]["price"], 12.35);
+
+        // From string representation
+        let raw_str = json!({"price": "99.999"});
+        let formatted_str = format_values(&raw_str, &schema).unwrap();
+        assert_eq!(formatted_str.records[0]["price"], 100.0);
+    }
+
+    #[test]
+    fn test_format_date_normalization() {
+        let schema = OutputSchema {
+            name: "Test".to_string(),
+            fields: vec![FieldDef {
+                name: "date".to_string(),
+                field_type: FieldType::Date {
+                    format: "%Y-%m-%d".to_string(),
+                },
+                required: true,
+                description: "".to_string(),
+                default: None,
+            }],
+            case_normalization: None,
+        };
+        // Standard ISO date
+        let raw1 = json!({"date": "2024-05-20"});
+        let formatted1 = format_values(&raw1, &schema).unwrap();
+        assert_eq!(formatted1.records[0]["date"], "2024-05-20");
+
+        // European date format normalized to %Y-%m-%d
+        let raw2 = json!({"date": "20-05-2024"});
+        let formatted2 = format_values(&raw2, &schema).unwrap();
+        assert_eq!(formatted2.records[0]["date"], "2024-05-20");
+
+        // RFC3339 datetime normalized to date
+        let raw3 = json!({"date": "2024-05-20T14:30:00Z"});
+        let formatted3 = format_values(&raw3, &schema).unwrap();
+        assert_eq!(formatted3.records[0]["date"], "2024-05-20");
     }
 }
